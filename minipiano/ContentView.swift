@@ -11,6 +11,7 @@ enum AppPage {
     case menu
     case piano
     case trombone
+    case pianoRoll
 }
 
 // MARK: - Main menu
@@ -86,6 +87,32 @@ struct MainMenuView: View {
                         )
                     }
                     .buttonStyle(.plain)
+
+                    // Piano Roll card
+                    Button { currentPage = .pianoRoll } label: {
+                        HStack {
+                            Text("🎼")
+                                .font(.system(size: 40))
+                            VStack(alignment: .leading) {
+                                Text("音乐编辑器")
+                                    .font(.title2.bold())
+                                Text("钢琴卷帘 · 创作旋律")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                        .padding()
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(Color(.systemBackground))
+                                .shadow(color: .black.opacity(0.1),
+                                        radius: 5, y: 2)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 30)
             }
@@ -106,6 +133,8 @@ struct ContentView: View {
             PianoView(onBack: { currentPage = .menu })
         case .trombone:
             TromboneView(onBack: { currentPage = .menu })
+        case .pianoRoll:
+            PianoRollView(onBack: { currentPage = .menu })
         }
     }
 }

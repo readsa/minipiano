@@ -1144,54 +1144,55 @@ struct PianoRollView: View {
 
                 let noteW = max(4, baseW + effectiveResizeDelta - 2)
                 let noteH = cellHeight - 2
-                let noteX = baseX + effectiveOffset + 1 + noteW / 2
+                // Position note body by its own center (stable left edge)
+                let bodyCenterX = baseX + effectiveOffset + 1 + noteW / 2
                 let noteY = CGFloat(displayRow) * cellHeight + 1 + noteH / 2
 
-                ZStack(alignment: .trailing) {
-                    // Note body
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(timbreColor(note.timbre))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
-                                        lineWidth: isSelected ? 2 : 0.5)
-                        )
-                        .frame(width: noteW, height: noteH)
-
-                    // Resize handle (visible when selected)
-                    if isSelected {
-                        Image(systemName: "arrow.left.and.right")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 22, height: noteH)
-                            .background(Color.black.opacity(0.45))
-                            .cornerRadius(3)
-                            .gesture(resizeDragGesture(for: note, ppt: ppt, tpb: tpb))
+                // Note body – independently positioned
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(timbreColor(note.timbre))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
+                                    lineWidth: isSelected ? 2 : 0.5)
+                    )
+                    .frame(width: noteW, height: noteH)
+                    .contentShape(Rectangle())
+                    .gesture(isSelected
+                             ? moveDragGesture(for: note, ppt: ppt, tpb: tpb)
+                             : nil)
+                    .onTapGesture {
+                        if isSelected {
+                            selectedNoteID = nil
+                            noteDragOffset = 0
+                            noteResizeDelta = 0
+                        } else {
+                            selectedNoteID = note.id
+                            noteDragOffset = 0
+                            noteResizeDelta = 0
+                        }
                     }
-                }
-                .frame(width: noteW, height: noteH)
-                .contentShape(Rectangle())
-                .gesture(isSelected
-                         ? moveDragGesture(for: note, ppt: ppt, tpb: tpb)
-                         : nil)
-                .onTapGesture {
-                    if isSelected {
-                        selectedNoteID = nil
-                        noteDragOffset = 0
-                        noteResizeDelta = 0
-                    } else {
-                        // Select note (enter editing mode) instead of deleting
+                    .onLongPressGesture(minimumDuration: 0.4) {
                         selectedNoteID = note.id
                         noteDragOffset = 0
                         noteResizeDelta = 0
                     }
+                    .position(x: bodyCenterX, y: noteY)
+
+                // Resize handle – independently positioned outside the note's right edge
+                if isSelected {
+                    let handleWidth: CGFloat = 22
+                    let handleX = baseX + effectiveOffset + 1 + noteW + handleWidth / 2
+                    Image(systemName: "arrow.left.and.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: handleWidth, height: noteH)
+                        .background(Color.orange.opacity(0.7))
+                        .cornerRadius(3)
+                        .contentShape(Rectangle())
+                        .gesture(resizeDragGesture(for: note, ppt: ppt, tpb: tpb))
+                        .position(x: handleX, y: noteY)
                 }
-                .onLongPressGesture(minimumDuration: 0.4) {
-                    selectedNoteID = note.id
-                    noteDragOffset = 0
-                    noteResizeDelta = 0
-                }
-                .position(x: noteX, y: noteY)
             }
         }
     }
@@ -1200,7 +1201,7 @@ struct PianoRollView: View {
 
     /// Drag gesture to move the selected note horizontally, snapping to beat grid
     private func moveDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
-        DragGesture(minimumDistance: 5)
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .onChanged { value in
                 let rawTicks = value.translation.width / ppt
                 let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
@@ -1211,7 +1212,6 @@ struct PianoRollView: View {
                 let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
                 let newStart = note.startTick + snappedTicks
                 let clamped = max(0, min(newStart, viewModel.totalTicks - note.durationTicks))
-                // Snap to beat grid
                 let aligned = Int(round(Double(clamped) / Double(tpb))) * tpb
                 viewModel.moveNote(noteID: note.id, toTick: aligned)
                 noteDragOffset = 0
@@ -1220,12 +1220,11 @@ struct PianoRollView: View {
 
     /// Drag gesture to resize the selected note by dragging its right edge
     private func resizeDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
-        DragGesture(minimumDistance: 3)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
                 let rawTicks = value.translation.width / ppt
                 let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
                 let proposedDur = CGFloat(note.durationTicks) + snappedTicks
-                // Clamp: at least 1 beat, don't exceed grid
                 let minDur = CGFloat(tpb)
                 let maxDur = CGFloat(viewModel.totalTicks - note.startTick)
                 let clampedDur = max(minDur, min(proposedDur, maxDur))
@@ -1236,7 +1235,6 @@ struct PianoRollView: View {
                 let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
                 let newDur = note.durationTicks + snappedTicks
                 let clamped = max(tpb, min(newDur, viewModel.totalTicks - note.startTick))
-                // Snap to beat grid
                 let aligned = max(tpb, Int(round(Double(clamped) / Double(tpb))) * tpb)
                 viewModel.resizeNote(noteID: note.id, toDuration: aligned)
                 noteResizeDelta = 0

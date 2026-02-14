@@ -108,11 +108,21 @@ struct PianoRollView: View {
                     }
                     .disabled(!viewModel.canRedo)
 
-                    Button {
-                        if viewModel.isPlaying { viewModel.stop() } else { viewModel.play() }
-                    } label: {
-                        Image(systemName: viewModel.isPlaying ? "stop.fill" : "play.fill")
-                            .foregroundStyle(viewModel.isPlaying ? .red : .green)
+                    // Return to start
+                    Button { viewModel.returnToStart() } label: {
+                        Image(systemName: "backward.end.fill")
+                    }
+
+                    // Play / Pause
+                    Button { viewModel.togglePlayPause() } label: {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .foregroundStyle(viewModel.isPlaying ? .yellow : .green)
+                    }
+
+                    // Loop toggle
+                    Button { viewModel.isLooping.toggle() } label: {
+                        Image(systemName: "repeat")
+                            .foregroundStyle(viewModel.isLooping ? .green : .secondary)
                     }
 
                     fileMenu

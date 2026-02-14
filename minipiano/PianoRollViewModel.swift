@@ -43,6 +43,16 @@ final class PianoRollViewModel {
     var currentTick: Int = 0
     var playbackStartDate: Date? = nil
 
+    /// The tick at which the current playback session started (for smooth animation).
+    var playbackStartTick: Int = 0
+
+    /// The tick position where the playhead sits (used for seek / resume).
+    /// When not playing, this shows where playback will start from.
+    var playheadTick: Int = 0
+
+    /// Whether loop playback is enabled.
+    var isLooping: Bool = false
+
     // Audio configuration
     var selectedTimbre: Timbre = .sine
 
@@ -106,7 +116,7 @@ final class PianoRollViewModel {
 
     func setBeatsPerMeasure(_ newValue: Int) {
         guard Self.allowedBeats.contains(newValue), newValue != beatsPerMeasure else { return }
-        if isPlaying { stop() }
+        if isPlaying { pause() }
         recordSnapshot()
         beatsPerMeasure = newValue
         markDirty()
@@ -186,10 +196,12 @@ final class PianoRollViewModel {
 
     // MARK: - Playback
 
+    /// Start or resume playback from the current playheadTick.
     func play() {
         guard !isPlaying else { return }
         isPlaying = true
-        currentTick = 0
+        currentTick = playheadTick
+        playbackStartTick = playheadTick
         playbackStartDate = Date()
 
         let interval = 60.0 / bpm / 48.0  // seconds per tick
@@ -200,20 +212,91 @@ final class PianoRollViewModel {
         playbackTimer = timer
     }
 
+    /// Pause playback, keeping the playhead at the current position.
+    func pause() {
+        guard isPlaying else { return }
+        isPlaying = false
+        playbackTimer?.invalidate()
+        playbackTimer = nil
+        playheadTick = currentTick
+        playbackStartDate = nil
+        stopAllActiveNotes()
+    }
+
+    /// Toggle between play and pause.
+    func togglePlayPause() {
+        if isPlaying { pause() } else { play() }
+    }
+
+    /// Full stop: pause and reset playhead to 0.
     func stop() {
         isPlaying = false
         playbackTimer?.invalidate()
         playbackTimer = nil
         currentTick = 0
+        playheadTick = 0
         playbackStartDate = nil
+        stopAllActiveNotes()
+    }
+
+    /// Seek to a specific tick position.
+    /// If playing, restarts playback from the new position.
+    /// If paused, moves the playhead without starting.
+    func seek(toTick tick: Int) {
+        let clamped = max(0, min(tick, totalTicks))
+        if isPlaying {
+            // Stop current playback, seek, restart
+            stopAllActiveNotes()
+            playbackTimer?.invalidate()
+            playbackTimer = nil
+            isPlaying = false
+
+            playheadTick = clamped
+            currentTick = clamped
+            play()
+        } else {
+            playheadTick = clamped
+            currentTick = clamped
+        }
+    }
+
+    /// Return playhead to the beginning.
+    /// If playing, restarts from tick 0; otherwise just moves the playhead.
+    func returnToStart() {
+        if isPlaying {
+            seek(toTick: 0)
+        } else {
+            playheadTick = 0
+            currentTick = 0
+        }
+    }
+
+    private func stopAllActiveNotes() {
         for id in activeNoteIDs { engine.noteOff(id: id) }
         activeNoteIDs.removeAll()
     }
 
     private func tick() {
         if currentTick >= totalTicks {
-            stop()
-            return
+            if isLooping {
+                // Loop: restart from beginning
+                stopAllActiveNotes()
+                currentTick = 0
+                playheadTick = 0
+                playbackStartTick = 0
+                playbackStartDate = Date()
+                return
+            } else {
+                // End of track
+                isPlaying = false
+                playbackTimer?.invalidate()
+                playbackTimer = nil
+                playheadTick = 0
+                currentTick = 0
+                playbackStartDate = nil
+                stopAllActiveNotes()
+                return
+            }
         }
 
         let starting = notes.filter { $0.startTick == currentTick }
@@ -230,6 +313,7 @@ final class PianoRollViewModel {
             }
         }
 
+        playheadTick = currentTick
         currentTick += 1
     }
 
@@ -244,14 +328,14 @@ final class PianoRollViewModel {
     // MARK: - Measure management
 
     func addMeasure() {
-        if isPlaying { stop() }
+        if isPlaying { pause() }
         recordSnapshot()
         measures += 1
         markDirty()
     }
 
     func removeMeasure() {
-        if isPlaying { stop() }
+        if isPlaying { pause() }
         guard measures > 1 else { return }
         recordSnapshot()
         measures -= 1
@@ -288,7 +372,7 @@ final class PianoRollViewModel {
     }
 
     private func applySnapshot(_ snap: EditorSnapshot) {
-        if isPlaying { stop() }
+        if isPlaying { pause() }
         notes = snap.notes
         measures = snap.measures
         bpm = snap.bpm

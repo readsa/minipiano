@@ -24,26 +24,29 @@ struct PianoRollGridView: View {
         cellWidth / CGFloat(viewModel.ticksPerBeat)
     }
 
+    private let progressBarHeight: CGFloat = 24
+
     var body: some View {
         let gridWidth = CGFloat(viewModel.totalBeats) * cellWidth
         let gridHeight = CGFloat(viewModel.totalRows) * cellHeight
 
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                pianoKeyLabels
-                    .padding(.top, measureHeaderHeight)
-                    .frame(width: keyLabelWidth)
+                // Left column: empty space for progress bar + key labels
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: measureHeaderHeight + progressBarHeight)
+                    pianoKeyLabels
+                }
+                .frame(width: keyLabelWidth)
 
                 ScrollView(.horizontal) {
                     VStack(spacing: 0) {
-                        Color.clear.frame(height: measureHeaderHeight)
+                        Color.clear.frame(height: measureHeaderHeight + progressBarHeight)
 
                         ZStack(alignment: .topLeading) {
                             gridBackground
                             notesLayer
-                            if viewModel.isPlaying {
-                                playheadView
-                            }
+                            playheadView
                         }
                         .frame(width: gridWidth, height: gridHeight)
                     }
@@ -52,8 +55,11 @@ struct PianoRollGridView: View {
                     .overlay(alignment: .topLeading) {
                         GeometryReader { geo in
                             let offset = geo.frame(in: .named("pianoRollVScroll")).minY
-                            measureHeaderBar(width: gridWidth + cellWidth)
-                                .offset(y: max(0, -offset))
+                            VStack(spacing: 0) {
+                                measureHeaderBar(width: gridWidth + cellWidth)
+                                playbackProgressBar(width: gridWidth + cellWidth)
+                            }
+                            .offset(y: max(0, -offset))
                         }
                     }
                 }
@@ -188,15 +194,7 @@ struct PianoRollGridView: View {
 
     private var playheadView: some View {
         TimelineView(.animation) { timeline in
-            let smoothTick: CGFloat = {
-                guard let start = viewModel.playbackStartDate else {
-                    return CGFloat(viewModel.currentTick)
-                }
-                let elapsed = timeline.date.timeIntervalSince(start)
-                let ticksPerSecond = viewModel.bpm / 60.0 * 48.0
-                let tick = elapsed * ticksPerSecond
-                return min(CGFloat(tick), CGFloat(viewModel.totalTicks))
-            }()
+            let smoothTick: CGFloat = smoothTickValue(at: timeline.date)
             let x = smoothTick * pixelsPerTick
             Rectangle()
                 .fill(Color.white.opacity(0.6))
@@ -204,6 +202,99 @@ struct PianoRollGridView: View {
                 .frame(height: CGFloat(viewModel.totalRows) * cellHeight)
                 .offset(x: x)
                 .allowsHitTesting(false)
+        }
+    }
+
+    /// Shared smooth tick computation for playhead and progress bar.
+    private func smoothTickValue(at date: Date) -> CGFloat {
+        guard viewModel.isPlaying, let start = viewModel.playbackStartDate else {
+            return CGFloat(viewModel.playheadTick)
+        }
+        let elapsed = date.timeIntervalSince(start)
+        let ticksPerSecond = viewModel.bpm / 60.0 * 48.0
+        let tick = CGFloat(viewModel.playbackStartTick) + CGFloat(elapsed * ticksPerSecond)
+        if viewModel.isLooping {
+            let t = tick.truncatingRemainder(dividingBy: CGFloat(viewModel.totalTicks))
+            return t >= 0 ? t : t + CGFloat(viewModel.totalTicks)
+        }
+        return min(tick, CGFloat(viewModel.totalTicks))
+    }
+
+    // MARK: - Playback progress bar
+
+    /// A tappable progress bar showing the current playhead position, aligned with the grid.
+    private func playbackProgressBar(width: CGFloat) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let smoothTick = smoothTickValue(at: timeline.date)
+
+            let totalTicks = CGFloat(viewModel.totalTicks)
+            let gridWidth = width - cellWidth  // exclude trailing padding
+            let progress = totalTicks > 0 ? smoothTick / totalTicks : 0
+            let playheadX = progress * gridWidth
+
+            ZStack(alignment: .leading) {
+                // Track background
+                Rectangle()
+                    .fill(Color(white: 0.12))
+
+                // Filled portion
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.green.opacity(0.6), Color.green.opacity(0.3)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: max(0, playheadX))
+
+                // Playhead indicator
+                Capsule()
+                    .fill(.white)
+                    .frame(width: 4, height: progressBarHeight - 6)
+                    .offset(x: max(0, playheadX - 2))
+
+                // Beat grid lines
+                Canvas { context, size in
+                    let bpm = viewModel.beatsPerMeasure
+                    let totalBeats = viewModel.totalBeats
+                    for beat in 0...totalBeats {
+                        let x = CGFloat(beat) * cellWidth
+                        let isMeasureLine = beat % bpm == 0
+                        guard isMeasureLine else { continue }
+                        var path = Path()
+                        path.move(to: CGPoint(x: x, y: 0))
+                        path.addLine(to: CGPoint(x: x, y: size.height))
+                        context.stroke(
+                            path,
+                            with: .color(.white.opacity(0.2)),
+                            lineWidth: 0.5
+                        )
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+            .frame(width: width, height: progressBarHeight)
+            .contentShape(Rectangle())
+            .onTapGesture { location in
+                let tappedX = location.x
+                let fraction = max(0, min(tappedX / gridWidth, 1.0))
+                let tick = Int(fraction * totalTicks)
+                // Snap to nearest beat
+                let tpb = viewModel.ticksPerBeat
+                let snapped = Int(round(Double(tick) / Double(tpb))) * tpb
+                viewModel.seek(toTick: min(snapped, viewModel.totalTicks))
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let fraction = max(0, min(value.location.x / gridWidth, 1.0))
+                        let tick = Int(fraction * totalTicks)
+                        let tpb = viewModel.ticksPerBeat
+                        let snapped = Int(round(Double(tick) / Double(tpb))) * tpb
+                        viewModel.seek(toTick: min(snapped, viewModel.totalTicks))
+                    }
+            )
         }
     }
 }

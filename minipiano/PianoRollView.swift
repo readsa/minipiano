@@ -11,40 +11,59 @@ import Combine
 // MARK: - Data model
 
 /// A single note placed on the piano roll grid.
+/// Positions and durations are stored in **ticks** (1 measure = 48 ticks).
+/// 48 is the LCM of 12 and 16, so it divides evenly by all allowed
+/// beatsPerMeasure values (1, 2, 3, 4, 6, 8, 12, 16).
 struct RollNote: Identifiable, Equatable, Hashable, Codable {
     let id: UUID
     /// Row index (0 = lowest note)
     var row: Int
-    /// Column index (beat position)
-    var column: Int
-    /// Duration in beats (minimum 1)
-    var duration: Int
+    /// Start position in ticks (48 ticks per measure)
+    var startTick: Int
+    /// Duration in ticks (minimum 1)
+    var durationTicks: Int
+    /// The timbre/instrument for this note
+    var timbre: Timbre
 
-    init(row: Int, column: Int, duration: Int = 1) {
+    init(row: Int, startTick: Int, durationTicks: Int = 12, timbre: Timbre = .sine) {
         self.id = UUID()
         self.row = row
-        self.column = column
-        self.duration = duration
+        self.startTick = startTick
+        self.durationTicks = max(1, durationTicks)
+        self.timbre = timbre
     }
 
-    // Only encode musical data (id is regenerated on decode)
+    // Coding keys include both old (column/duration) and new (startTick/durationTicks)
     enum CodingKeys: String, CodingKey {
-        case row, column, duration
+        case row, column, duration, startTick, durationTicks, timbre
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.id = UUID()
         self.row = try container.decode(Int.self, forKey: .row)
-        self.column = try container.decode(Int.self, forKey: .column)
-        self.duration = try container.decode(Int.self, forKey: .duration)
+        self.timbre = try container.decodeIfPresent(Timbre.self, forKey: .timbre) ?? .sine
+
+        // Try new format first, fall back to legacy column/duration
+        if let st = try? container.decode(Int.self, forKey: .startTick),
+           let dt = try? container.decode(Int.self, forKey: .durationTicks) {
+            self.startTick = st
+            self.durationTicks = max(1, dt)
+        } else {
+            let column = try container.decode(Int.self, forKey: .column)
+            let duration = try container.decode(Int.self, forKey: .duration)
+            // Legacy: column was a beat index in 4‐beat mode → 12 ticks per beat
+            self.startTick = column * 12
+            self.durationTicks = max(1, duration * 12)
+        }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(row, forKey: .row)
-        try container.encode(column, forKey: .column)
-        try container.encode(duration, forKey: .duration)
+        try container.encode(startTick, forKey: .startTick)
+        try container.encode(durationTicks, forKey: .durationTicks)
+        try container.encode(timbre, forKey: .timbre)
     }
 }
 
@@ -55,7 +74,29 @@ struct PianoRollProject: Codable {
     var projectName: String
     var bpm: Double
     var measures: Int
+    var beatsPerMeasure: Int
     var notes: [RollNote]
+
+    enum CodingKeys: String, CodingKey {
+        case projectName, bpm, measures, beatsPerMeasure, notes
+    }
+
+    init(projectName: String, bpm: Double, measures: Int, beatsPerMeasure: Int, notes: [RollNote]) {
+        self.projectName = projectName
+        self.bpm = bpm
+        self.measures = measures
+        self.beatsPerMeasure = beatsPerMeasure
+        self.notes = notes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.projectName = try container.decode(String.self, forKey: .projectName)
+        self.bpm = try container.decode(Double.self, forKey: .bpm)
+        self.measures = try container.decode(Int.self, forKey: .measures)
+        self.beatsPerMeasure = try container.decodeIfPresent(Int.self, forKey: .beatsPerMeasure) ?? 4
+        self.notes = try container.decode([RollNote].self, forKey: .notes)
+    }
 }
 
 /// Metadata for listing saved projects (without loading full note data).
@@ -73,21 +114,34 @@ private struct EditorSnapshot {
     let notes: [RollNote]
     let measures: Int
     let bpm: Double
+    let beatsPerMeasure: Int
 }
 
 // MARK: - Piano Roll ViewModel
 
 @Observable
 final class PianoRollViewModel {
-    // Grid dimensions
-    let totalRows = 61          // C2..C7 (5 octaves + 1)
-    var measures = 8            // number of measures (4 beats each)
-    var totalColumns: Int { measures * 4 }
+    // MARK: Constants
+    let totalRows = 61           // C2..C7 (5 octaves + 1)
+    static let ticksPerMeasure = 48
+
+    /// Allowed beats‐per‐measure values (divides 48 evenly)
+    static let allowedBeats: [Int] = [1, 2, 3, 4, 6, 8, 12, 16]
+
+    // MARK: Grid dimensions
+    var measures = 8
+    var beatsPerMeasure = 4
+
+    var ticksPerBeat: Int { Self.ticksPerMeasure / beatsPerMeasure }
+    var totalBeats: Int { measures * beatsPerMeasure }
+    var totalTicks: Int { measures * Self.ticksPerMeasure }
+
+    // MARK: Notes & playback state
     var notes: [RollNote] = []
     var bpm: Double = 120
     var isPlaying = false
-    var currentBeat: Double = 0
-    
+    var currentTick: Int = 0
+
     // Audio configuration
     var selectedTimbre: Timbre = .sine
 
@@ -106,7 +160,7 @@ final class PianoRollViewModel {
     var showClearConfirm = false
     var showSaveSheet = false
     var showLoadSheet = false
-    var showUnsavedAlert = false          // "save before load?" prompt
+    var showUnsavedAlert = false
     var showSaveSuccess = false
     var savedProjects: [ProjectFileInfo] = []
     var saveNameInput: String = ""
@@ -117,20 +171,16 @@ final class PianoRollViewModel {
                      "F#", "G", "G#", "A", "A#", "B"]
         var result: [String] = []
         for octave in 2...6 {
-            for name in names {
-                result.append("\(name)\(octave)")
-            }
+            for name in names { result.append("\(name)\(octave)") }
         }
-        result.append("C7")  // top note
+        result.append("C7")
         return result
     }()
 
-    /// Frequency for each row (row 0 = C2)
+    /// Frequency for each row (row 0 = C2 = MIDI 36)
     let frequencies: [Double] = {
-        // C2 = MIDI 36
-        return (0..<61).map { i in
-            let midi = 36 + i
-            return 440.0 * pow(2.0, Double(midi - 69) / 12.0)
+        (0..<61).map { i in
+            440.0 * pow(2.0, Double(36 + i - 69) / 12.0)
         }
     }()
 
@@ -151,41 +201,86 @@ final class PianoRollViewModel {
         restoreAutoSave()
     }
 
+    // MARK: - Beat setting
+
+    func setBeatsPerMeasure(_ newValue: Int) {
+        guard Self.allowedBeats.contains(newValue), newValue != beatsPerMeasure else { return }
+        if isPlaying { stop() }
+        recordSnapshot()
+        beatsPerMeasure = newValue
+        markDirty()
+    }
+
     // MARK: - Note editing
 
-    /// Toggle a note at (row, column). If one exists, remove it; otherwise add one.
-    func toggleNote(row: Int, column: Int) {
-        recordSnapshot()
-        if let idx = notes.firstIndex(where: { $0.row == row && $0.column == column }) {
-            notes.remove(at: idx)
+    /// Add a note at the given beat index. If one already covers that position, remove it.
+    func toggleNote(row: Int, beatIndex: Int) {
+        let tick = beatIndex * ticksPerBeat
+        if let existing = noteAt(row: row, tick: tick) {
+            recordSnapshot()
+            notes.removeAll { $0.id == existing.id }
+            markDirty()
         } else {
-            notes.append(RollNote(row: row, column: column, duration: 1))
-            previewNote(row: row)
+            recordSnapshot()
+            let dur = ticksPerBeat
+            notes.append(RollNote(row: row, startTick: tick, durationTicks: dur, timbre: selectedTimbre))
+            previewNote(row: row, timbre: selectedTimbre)
+            markDirty()
+        }
+    }
+
+    /// Change the timbre of an existing note
+    func changeNoteTimbre(noteID: UUID, to timbre: Timbre) {
+        recordSnapshot()
+        if let idx = notes.firstIndex(where: { $0.id == noteID }) {
+            notes[idx].timbre = timbre
+        }
+        markDirty()
+    }
+
+    /// Remove a specific note by its ID
+    func removeNote(noteID: UUID) {
+        recordSnapshot()
+        notes.removeAll { $0.id == noteID }
+        markDirty()
+    }
+
+    /// Move a note to a new startTick (clamped to valid range)
+    func moveNote(noteID: UUID, toTick newStart: Int) {
+        recordSnapshot()
+        if let idx = notes.firstIndex(where: { $0.id == noteID }) {
+            let clamped = max(0, min(newStart, totalTicks - notes[idx].durationTicks))
+            notes[idx].startTick = clamped
+        }
+        markDirty()
+    }
+
+    /// Resize a note to a new duration in ticks (minimum = 1 tick)
+    func resizeNote(noteID: UUID, toDuration newDur: Int) {
+        recordSnapshot()
+        if let idx = notes.firstIndex(where: { $0.id == noteID }) {
+            let clamped = max(1, min(newDur, totalTicks - notes[idx].startTick))
+            notes[idx].durationTicks = clamped
         }
         markDirty()
     }
 
     /// Play a short preview of a note when placed
-    private func previewNote(row: Int) {
+    private func previewNote(row: Int, timbre: Timbre) {
         let previewID = "preview_\(UUID())"
-        engine.currentTimbre = selectedTimbre
+        engine.currentTimbre = timbre
         engine.noteOn(id: previewID, frequency: frequencies[row])
-        let stepDuration = 60.0 / bpm / 4.0
-        DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration) { [weak self] in
+        let dur = 60.0 / bpm / 48.0 * Double(ticksPerBeat)
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in
             self?.engine.noteOff(id: previewID)
         }
     }
 
-    /// Check if a cell is occupied by a note (either starting or sustained)
-    func noteAt(row: Int, column: Int) -> RollNote? {
+    /// Return the note covering the given tick/row, if any.
+    func noteAt(row: Int, tick: Int) -> RollNote? {
         notes.first { n in
-            n.row == row && column >= n.column && column < n.column + n.duration
+            n.row == row && tick >= n.startTick && tick < n.startTick + n.durationTicks
         }
-    }
-
-    /// Check if a cell is the start of a note
-    func isNoteStart(row: Int, column: Int) -> Bool {
-        notes.contains { $0.row == row && $0.column == column }
     }
 
     // MARK: - Playback
@@ -193,12 +288,11 @@ final class PianoRollViewModel {
     func play() {
         guard !isPlaying else { return }
         isPlaying = true
-        currentBeat = 0
+        currentTick = 0
 
-        let interval = 60.0 / bpm / 4.0  // 16th note resolution
+        let interval = 60.0 / bpm / 48.0  // seconds per tick
         playbackTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.tick()
+            self?.tick()
         }
     }
 
@@ -206,38 +300,35 @@ final class PianoRollViewModel {
         isPlaying = false
         playbackTimer?.invalidate()
         playbackTimer = nil
-        currentBeat = 0
-        for id in activeNoteIDs {
-            engine.noteOff(id: id)
-        }
+        currentTick = 0
+        for id in activeNoteIDs { engine.noteOff(id: id) }
         activeNoteIDs.removeAll()
     }
 
     private func tick() {
-        let beatIndex = Int(currentBeat)
-        if beatIndex >= totalColumns {
+        if currentTick >= totalTicks {
             stop()
             return
         }
 
-        let startingNotes = notes.filter { $0.column == beatIndex }
-        for note in startingNotes {
+        let starting = notes.filter { $0.startTick == currentTick }
+        for note in starting {
             let noteID = "roll_\(note.id)"
-            engine.currentTimbre = selectedTimbre
+            engine.currentTimbre = note.timbre
             engine.noteOn(id: noteID, frequency: frequencies[note.row])
             activeNoteIDs.insert(noteID)
 
-            let duration = 60.0 / bpm / 4.0 * Double(note.duration)
-            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            let dur = 60.0 / bpm / 48.0 * Double(note.durationTicks)
+            DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in
                 self?.engine.noteOff(id: noteID)
                 self?.activeNoteIDs.remove(noteID)
             }
         }
 
-        currentBeat += 1
+        currentTick += 1
     }
 
-    /// Clear all notes (called after user confirmation)
+    /// Clear all notes
     func clearAll() {
         recordSnapshot()
         stop()
@@ -259,12 +350,12 @@ final class PianoRollViewModel {
         guard measures > 1 else { return }
         recordSnapshot()
         measures -= 1
-        let maxCol = totalColumns
-        notes.removeAll { $0.column >= maxCol }
+        let maxTick = totalTicks
+        notes.removeAll { $0.startTick >= maxTick }
         for i in notes.indices {
-            let end = notes[i].column + notes[i].duration
-            if end > maxCol {
-                notes[i].duration = max(1, maxCol - notes[i].column)
+            let end = notes[i].startTick + notes[i].durationTicks
+            if end > maxTick {
+                notes[i].durationTicks = max(1, maxTick - notes[i].startTick)
             }
         }
         markDirty()
@@ -273,24 +364,21 @@ final class PianoRollViewModel {
     // MARK: - Undo / Redo
 
     private func recordSnapshot() {
-        let snap = EditorSnapshot(notes: notes, measures: measures, bpm: bpm)
+        let snap = EditorSnapshot(notes: notes, measures: measures, bpm: bpm, beatsPerMeasure: beatsPerMeasure)
         undoStack.append(snap)
-        if undoStack.count > maxUndoLevels {
-            undoStack.removeFirst()
-        }
+        if undoStack.count > maxUndoLevels { undoStack.removeFirst() }
         redoStack.removeAll()
     }
 
     func undo() {
         guard let snap = undoStack.popLast() else { return }
-        // Save current state to redo
-        redoStack.append(EditorSnapshot(notes: notes, measures: measures, bpm: bpm))
+        redoStack.append(EditorSnapshot(notes: notes, measures: measures, bpm: bpm, beatsPerMeasure: beatsPerMeasure))
         applySnapshot(snap)
     }
 
     func redo() {
         guard let snap = redoStack.popLast() else { return }
-        undoStack.append(EditorSnapshot(notes: notes, measures: measures, bpm: bpm))
+        undoStack.append(EditorSnapshot(notes: notes, measures: measures, bpm: bpm, beatsPerMeasure: beatsPerMeasure))
         applySnapshot(snap)
     }
 
@@ -299,6 +387,7 @@ final class PianoRollViewModel {
         notes = snap.notes
         measures = snap.measures
         bpm = snap.bpm
+        beatsPerMeasure = snap.beatsPerMeasure
         hasUnsavedChanges = true
         autoSave()
     }
@@ -312,7 +401,6 @@ final class PianoRollViewModel {
 
     // MARK: - Project save / load
 
-    /// Directory for saved projects
     private static var projectsDirectory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("PianoRollProjects", isDirectory: true)
@@ -320,12 +408,10 @@ final class PianoRollViewModel {
         return dir
     }
 
-    /// Auto-save file path
     private static var autoSaveURL: URL {
         projectsDirectory.appendingPathComponent("_autosave.json")
     }
 
-    /// Build a filename from date + project name
     private func makeFileName(name: String) -> String {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd-HH-mm-ss"
@@ -335,52 +421,42 @@ final class PianoRollViewModel {
         return "\(dateStr)-\(safeName).json"
     }
 
-    /// Save current project to a named file
     func saveProject(name: String) {
         let project = PianoRollProject(
-            projectName: name,
-            bpm: bpm,
-            measures: measures,
+            projectName: name, bpm: bpm,
+            measures: measures, beatsPerMeasure: beatsPerMeasure,
             notes: notes
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(project) else { return }
-
-        let fileName = makeFileName(name: name)
-        let url = Self.projectsDirectory.appendingPathComponent(fileName)
+        let url = Self.projectsDirectory.appendingPathComponent(makeFileName(name: name))
         try? data.write(to: url)
-
         projectName = name
         hasUnsavedChanges = false
         showSaveSuccess = true
     }
 
-    /// Load project from a file URL
     func loadProject(from url: URL) {
         guard let data = try? Data(contentsOf: url),
               let project = try? JSONDecoder().decode(PianoRollProject.self, from: data) else { return }
         if isPlaying { stop() }
-
-        // Reset undo/redo for the new project
         undoStack.removeAll()
         redoStack.removeAll()
-
         notes = project.notes
         measures = project.measures
         bpm = project.bpm
+        beatsPerMeasure = project.beatsPerMeasure
         projectName = project.projectName
         hasUnsavedChanges = false
         autoSave()
     }
 
-    /// List all saved project files, sorted by date descending
     func refreshSavedProjects() {
         let fm = FileManager.default
         let dir = Self.projectsDirectory
         guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]) else {
-            savedProjects = []
-            return
+            savedProjects = []; return
         }
         savedProjects = files
             .filter { $0.lastPathComponent != "_autosave.json" && $0.pathExtension == "json" }
@@ -388,39 +464,29 @@ final class PianoRollViewModel {
                 let name = url.deletingPathExtension().lastPathComponent
                 let attrs = try? fm.attributesOfItem(atPath: url.path)
                 let date = (attrs?[.creationDate] as? Date) ?? Date.distantPast
-                // Extract display name: strip the date prefix (20 chars: yyyy-MM-dd-HH-mm-ss-)
-                let displayName: String
-                if name.count > 20 {
-                    displayName = String(name.dropFirst(20))
-                } else {
-                    displayName = name
-                }
+                let displayName = name.count > 20 ? String(name.dropFirst(20)) : name
                 return ProjectFileInfo(fileName: url.lastPathComponent, displayName: displayName, date: date, url: url)
             }
             .sorted { $0.date > $1.date }
     }
 
-    /// Delete a saved project file
     func deleteProject(_ info: ProjectFileInfo) {
         try? FileManager.default.removeItem(at: info.url)
         refreshSavedProjects()
     }
 
-    // MARK: - Auto-save (temp persistence)
+    // MARK: - Auto-save
 
-    /// Save current state to the auto-save file
     func autoSave() {
         let project = PianoRollProject(
-            projectName: projectName,
-            bpm: bpm,
-            measures: measures,
+            projectName: projectName, bpm: bpm,
+            measures: measures, beatsPerMeasure: beatsPerMeasure,
             notes: notes
         )
         guard let data = try? JSONEncoder().encode(project) else { return }
         try? data.write(to: Self.autoSaveURL)
     }
 
-    /// Restore from the auto-save file on launch
     private func restoreAutoSave() {
         let url = Self.autoSaveURL
         guard FileManager.default.fileExists(atPath: url.path),
@@ -429,8 +495,8 @@ final class PianoRollViewModel {
         notes = project.notes
         measures = project.measures
         bpm = project.bpm
+        beatsPerMeasure = project.beatsPerMeasure
         projectName = project.projectName
-        // Restored from auto-save means there may be unsaved work
         hasUnsavedChanges = true
     }
 }
@@ -442,10 +508,20 @@ struct PianoRollView: View {
     @State private var viewModel = PianoRollViewModel()
     @Environment(\.scenePhase) private var scenePhase
 
-    // Grid cell size
-    private let cellWidth: CGFloat = 40
+    // Grid cell sizing
+    private let cellWidth: CGFloat = 40    // pixels per beat column
     private let cellHeight: CGFloat = 28
     private let keyLabelWidth: CGFloat = 50
+
+    // Editing state
+    @State private var selectedNoteID: UUID? = nil
+    @State private var noteDragOffset: CGFloat = 0
+    @State private var noteResizeDelta: CGFloat = 0
+
+    /// Pixels per tick, derived from cellWidth and current ticksPerBeat
+    private var pixelsPerTick: CGFloat {
+        cellWidth / CGFloat(viewModel.ticksPerBeat)
+    }
 
     var body: some View {
         ZStack {
@@ -457,6 +533,15 @@ struct PianoRollView: View {
                 toolbar
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
+
+                // Note editing toolbar (shown when a note is selected)
+                if let selID = selectedNoteID,
+                   let note = viewModel.notes.first(where: { $0.id == selID }) {
+                    noteEditingBar(note: note)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 6)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
                 // Piano roll grid
                 GeometryReader { geo in
@@ -474,7 +559,7 @@ struct PianoRollView: View {
                                     }
                                 }
                                 .frame(
-                                    width: CGFloat(viewModel.totalColumns) * cellWidth,
+                                    width: CGFloat(viewModel.totalBeats) * cellWidth,
                                     height: CGFloat(viewModel.totalRows) * cellHeight
                                 )
                             }
@@ -510,26 +595,20 @@ struct PianoRollView: View {
                 }
             }
         }
-        // Auto-save when app goes to background
+        .animation(.easeInOut(duration: 0.2), value: selectedNoteID)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background || newPhase == .inactive {
                 viewModel.autoSave()
             }
         }
-        // Clear all confirmation
         .alert("确认清除", isPresented: $viewModel.showClearConfirm) {
-            Button("清除所有音符", role: .destructive) {
-                viewModel.clearAll()
-            }
+            Button("清除所有音符", role: .destructive) { viewModel.clearAll() }
             Button("取消", role: .cancel) {}
         } message: {
             Text("此操作将删除当前所有音符，是否继续？")
         }
-        // Unsaved changes alert (shown before loading)
         .alert("未保存的更改", isPresented: $viewModel.showUnsavedAlert) {
-            Button("保存并加载") {
-                viewModel.showSaveSheet = true
-            }
+            Button("保存并加载") { viewModel.showSaveSheet = true }
             Button("不保存，直接加载", role: .destructive) {
                 viewModel.refreshSavedProjects()
                 viewModel.showLoadSheet = true
@@ -538,20 +617,13 @@ struct PianoRollView: View {
         } message: {
             Text("当前工程有未保存的更改，是否先保存？")
         }
-        // Save success toast
         .alert("保存成功", isPresented: $viewModel.showSaveSuccess) {
             Button("好的") {}
         } message: {
             Text("工程已保存为 \(viewModel.projectName)")
         }
-        // Save sheet
-        .sheet(isPresented: $viewModel.showSaveSheet) {
-            saveProjectSheet
-        }
-        // Load sheet
-        .sheet(isPresented: $viewModel.showLoadSheet) {
-            loadProjectSheet
-        }
+        .sheet(isPresented: $viewModel.showSaveSheet) { saveProjectSheet }
+        .sheet(isPresented: $viewModel.showLoadSheet) { loadProjectSheet }
     }
 
     // MARK: - Toolbar
@@ -566,9 +638,9 @@ struct PianoRollView: View {
                 // Timbre selector
                 Menu {
                     ForEach(Timbre.allCases, id: \.self) { timbre in
-                        Button(action: {
+                        Button {
                             viewModel.selectedTimbre = timbre
-                        }) {
+                        } label: {
                             HStack {
                                 Text(timbre.displayName)
                                 if viewModel.selectedTimbre == timbre {
@@ -579,8 +651,39 @@ struct PianoRollView: View {
                     }
                 } label: {
                     HStack(spacing: 4) {
+                        Circle()
+                            .fill(timbreColor(viewModel.selectedTimbre))
+                            .frame(width: 10, height: 10)
                         Image(systemName: "waveform")
-                        Text(viewModel.selectedTimbre.displayName)
+                        Text("画笔: \(viewModel.selectedTimbre.displayName)")
+                            .font(.caption)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(8)
+                }
+
+                // Beats per measure selector
+                Menu {
+                    ForEach(PianoRollViewModel.allowedBeats, id: \.self) { n in
+                        Button {
+                            selectedNoteID = nil
+                            viewModel.setBeatsPerMeasure(n)
+                        } label: {
+                            HStack {
+                                Text("每小节 \(n) 拍")
+                                if viewModel.beatsPerMeasure == n {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "metronome.fill")
+                        Text("\(viewModel.beatsPerMeasure)拍/小节")
                             .font(.caption)
                     }
                     .foregroundColor(.white)
@@ -632,11 +735,7 @@ struct PianoRollView: View {
 
                 // Play / Stop
                 Button {
-                    if viewModel.isPlaying {
-                        viewModel.stop()
-                    } else {
-                        viewModel.play()
-                    }
+                    if viewModel.isPlaying { viewModel.stop() } else { viewModel.play() }
                 } label: {
                     Image(systemName: viewModel.isPlaying ? "stop.fill" : "play.fill")
                         .font(.title2)
@@ -646,12 +745,9 @@ struct PianoRollView: View {
                         .cornerRadius(8)
                 }
 
-                // Clear (with confirmation)
+                // Clear
                 Button {
-                    if viewModel.notes.isEmpty {
-                        return  // nothing to clear
-                    }
-                    viewModel.showClearConfirm = true
+                    if !viewModel.notes.isEmpty { viewModel.showClearConfirm = true }
                 } label: {
                     Image(systemName: "trash")
                         .font(.body)
@@ -663,9 +759,7 @@ struct PianoRollView: View {
 
                 // Measure controls
                 HStack(spacing: 4) {
-                    Button {
-                        viewModel.removeMeasure()
-                    } label: {
+                    Button { viewModel.removeMeasure() } label: {
                         Image(systemName: "minus")
                             .font(.caption.bold())
                             .foregroundColor(viewModel.measures <= 1 ? .gray.opacity(0.3) : .white)
@@ -680,9 +774,7 @@ struct PianoRollView: View {
                         .foregroundColor(.white)
                         .frame(minWidth: 46)
 
-                    Button {
-                        viewModel.addMeasure()
-                    } label: {
+                    Button { viewModel.addMeasure() } label: {
                         Image(systemName: "plus")
                             .font(.caption.bold())
                             .foregroundColor(.white)
@@ -734,7 +826,6 @@ struct PianoRollView: View {
                     .cornerRadius(8)
                 }
 
-                // Project name indicator
                 if viewModel.hasUnsavedChanges {
                     Text("● 未保存")
                         .font(.caption2)
@@ -742,6 +833,77 @@ struct PianoRollView: View {
                 }
             }
             .padding(.trailing, 12)
+        }
+    }
+
+    // MARK: - Note editing toolbar
+
+    private func noteEditingBar(note: RollNote) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                Text("编辑音符")
+                    .font(.caption.bold())
+                    .foregroundColor(.white)
+
+                Divider().frame(height: 20).background(Color.white.opacity(0.3))
+
+                // Timbre options
+                ForEach(Timbre.allCases, id: \.self) { timbre in
+                    Button {
+                        viewModel.changeNoteTimbre(noteID: note.id, to: timbre)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Circle()
+                                .fill(timbreColor(timbre))
+                                .frame(width: 8, height: 8)
+                            Text(timbre.displayName)
+                                .font(.system(size: 11))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            note.timbre == timbre
+                                ? Color.white.opacity(0.25)
+                                : Color.white.opacity(0.08)
+                        )
+                        .cornerRadius(6)
+                    }
+                    .foregroundColor(.white)
+                }
+
+                Divider().frame(height: 20).background(Color.white.opacity(0.3))
+
+                // Info
+                Text("起始:\(note.startTick)t  时长:\(note.durationTicks)t")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.gray)
+
+                // Delete
+                Button {
+                    let id = note.id
+                    selectedNoteID = nil
+                    viewModel.removeNote(noteID: id)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.1))
+                        .cornerRadius(6)
+                }
+
+                // Close editing
+                Button {
+                    selectedNoteID = nil
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(white: 0.18).cornerRadius(8))
         }
     }
 
@@ -772,6 +934,8 @@ struct PianoRollView: View {
                         Label("\(viewModel.notes.count) 个音符", systemImage: "music.note")
                         Spacer()
                         Label("\(viewModel.measures) 小节", systemImage: "rectangle.split.3x1")
+                        Spacer()
+                        Label("\(viewModel.beatsPerMeasure) 拍/小节", systemImage: "metronome")
                         Spacer()
                         Label("BPM \(Int(viewModel.bpm))", systemImage: "metronome")
                     }
@@ -875,8 +1039,10 @@ struct PianoRollView: View {
     private var gridBackground: some View {
         Canvas { context, size in
             let rows = viewModel.totalRows
-            let cols = viewModel.totalColumns
+            let totalBeats = viewModel.totalBeats
+            let bpm = viewModel.beatsPerMeasure
 
+            // Row backgrounds
             for row in 0..<rows {
                 let displayRow = rows - 1 - row
                 let isBlack = viewModel.isBlackKey(row: row)
@@ -888,27 +1054,27 @@ struct PianoRollView: View {
                 )
                 context.fill(
                     Path(rect),
-                    with: .color(isBlack
-                                 ? Color(white: 0.16)
-                                 : Color(white: 0.20))
+                    with: .color(isBlack ? Color(white: 0.16) : Color(white: 0.20))
                 )
             }
 
-            for col in 0...cols {
-                let x = CGFloat(col) * cellWidth
-                let isBeat = col % 4 == 0
+            // Beat & measure vertical lines
+            for beat in 0...totalBeats {
+                let x = CGFloat(beat) * cellWidth
+                let isMeasureLine = beat % bpm == 0
                 var path = Path()
                 path.move(to: CGPoint(x: x, y: 0))
                 path.addLine(to: CGPoint(x: x, y: size.height))
                 context.stroke(
                     path,
-                    with: .color(isBeat
-                                 ? Color.white.opacity(0.3)
+                    with: .color(isMeasureLine
+                                 ? Color.white.opacity(0.35)
                                  : Color.white.opacity(0.1)),
-                    lineWidth: isBeat ? 1.0 : 0.5
+                    lineWidth: isMeasureLine ? 1.2 : 0.5
                 )
             }
 
+            // Horizontal row lines
             for row in 0...rows {
                 let y = CGFloat(row) * cellHeight
                 var path = Path()
@@ -921,10 +1087,11 @@ struct PianoRollView: View {
                 )
             }
 
-            for col in stride(from: 0, to: cols, by: 4) {
-                let x = CGFloat(col) * cellWidth + 2
+            // Measure numbers
+            for measure in 0..<viewModel.measures {
+                let x = CGFloat(measure * bpm) * cellWidth + 2
                 context.draw(
-                    Text("\(col / 4 + 1)")
+                    Text("\(measure + 1)")
                         .font(.system(size: 9))
                         .foregroundColor(.gray),
                     at: CGPoint(x: x + 8, y: 6)
@@ -934,65 +1101,172 @@ struct PianoRollView: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: - Notes layer (tappable)
+    // MARK: - Notes layer
 
     private var notesLayer: some View {
-        ZStack(alignment: .topLeading) {
+        let ppt = pixelsPerTick
+        let tpb = viewModel.ticksPerBeat
+
+        return ZStack(alignment: .topLeading) {
+            // Tap targets per beat column
             ForEach(0..<viewModel.totalRows, id: \.self) { row in
-                ForEach(0..<viewModel.totalColumns, id: \.self) { col in
+                ForEach(0..<viewModel.totalBeats, id: \.self) { beat in
                     let displayRow = viewModel.totalRows - 1 - row
                     Color.clear
                         .frame(width: cellWidth, height: cellHeight)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            viewModel.toggleNote(row: row, column: col)
+                            if selectedNoteID != nil {
+                                selectedNoteID = nil
+                                noteDragOffset = 0
+                                noteResizeDelta = 0
+                            } else {
+                                viewModel.toggleNote(row: row, beatIndex: beat)
+                            }
                         }
                         .offset(
-                            x: CGFloat(col) * cellWidth,
+                            x: CGFloat(beat) * cellWidth,
                             y: CGFloat(displayRow) * cellHeight
                         )
                 }
             }
 
+            // Rendered notes
             ForEach(viewModel.notes) { note in
+                let isSelected = selectedNoteID == note.id
                 let displayRow = viewModel.totalRows - 1 - note.row
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(noteColor(row: note.row))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.white.opacity(0.4), lineWidth: 0.5)
-                    )
-                    .frame(
-                        width: CGFloat(note.duration) * cellWidth - 2,
-                        height: cellHeight - 2
-                    )
-                    .offset(
-                        x: CGFloat(note.column) * cellWidth + 1,
-                        y: CGFloat(displayRow) * cellHeight + 1
-                    )
-                    .allowsHitTesting(false)
+
+                let baseX = CGFloat(note.startTick) * ppt
+                let baseW = CGFloat(note.durationTicks) * ppt
+
+                let effectiveOffset = isSelected ? noteDragOffset : 0
+                let effectiveResizeDelta = isSelected ? noteResizeDelta : 0
+
+                let noteW = max(4, baseW + effectiveResizeDelta - 2)
+                let noteH = cellHeight - 2
+                let noteX = baseX + effectiveOffset + 1 + noteW / 2
+                let noteY = CGFloat(displayRow) * cellHeight + 1 + noteH / 2
+
+                ZStack(alignment: .trailing) {
+                    // Note body
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(timbreColor(note.timbre))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
+                                        lineWidth: isSelected ? 2 : 0.5)
+                        )
+                        .frame(width: noteW, height: noteH)
+
+                    // Resize handle (visible when selected)
+                    if isSelected {
+                        Image(systemName: "arrow.left.and.right")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 22, height: noteH)
+                            .background(Color.black.opacity(0.45))
+                            .cornerRadius(3)
+                            .gesture(resizeDragGesture(for: note, ppt: ppt, tpb: tpb))
+                    }
+                }
+                .frame(width: noteW, height: noteH)
+                .contentShape(Rectangle())
+                .gesture(isSelected
+                         ? moveDragGesture(for: note, ppt: ppt, tpb: tpb)
+                         : nil)
+                .onTapGesture {
+                    if isSelected {
+                        selectedNoteID = nil
+                        noteDragOffset = 0
+                        noteResizeDelta = 0
+                    } else {
+                        // Select note (enter editing mode) instead of deleting
+                        selectedNoteID = note.id
+                        noteDragOffset = 0
+                        noteResizeDelta = 0
+                    }
+                }
+                .onLongPressGesture(minimumDuration: 0.4) {
+                    selectedNoteID = note.id
+                    noteDragOffset = 0
+                    noteResizeDelta = 0
+                }
+                .position(x: noteX, y: noteY)
             }
         }
+    }
+
+    // MARK: - Drag gestures
+
+    /// Drag gesture to move the selected note horizontally, snapping to beat grid
+    private func moveDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
+        DragGesture(minimumDistance: 5)
+            .onChanged { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
+                noteDragOffset = snappedTicks * ppt
+            }
+            .onEnded { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
+                let newStart = note.startTick + snappedTicks
+                let clamped = max(0, min(newStart, viewModel.totalTicks - note.durationTicks))
+                // Snap to beat grid
+                let aligned = Int(round(Double(clamped) / Double(tpb))) * tpb
+                viewModel.moveNote(noteID: note.id, toTick: aligned)
+                noteDragOffset = 0
+            }
+    }
+
+    /// Drag gesture to resize the selected note by dragging its right edge
+    private func resizeDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
+        DragGesture(minimumDistance: 3)
+            .onChanged { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
+                let proposedDur = CGFloat(note.durationTicks) + snappedTicks
+                // Clamp: at least 1 beat, don't exceed grid
+                let minDur = CGFloat(tpb)
+                let maxDur = CGFloat(viewModel.totalTicks - note.startTick)
+                let clampedDur = max(minDur, min(proposedDur, maxDur))
+                noteResizeDelta = (clampedDur - CGFloat(note.durationTicks)) * ppt
+            }
+            .onEnded { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
+                let newDur = note.durationTicks + snappedTicks
+                let clamped = max(tpb, min(newDur, viewModel.totalTicks - note.startTick))
+                // Snap to beat grid
+                let aligned = max(tpb, Int(round(Double(clamped) / Double(tpb))) * tpb)
+                viewModel.resizeNote(noteID: note.id, toDuration: aligned)
+                noteResizeDelta = 0
+            }
     }
 
     // MARK: - Playhead
 
     private var playheadView: some View {
-        let x = CGFloat(viewModel.currentBeat) * cellWidth
+        let x = CGFloat(viewModel.currentTick) * pixelsPerTick
         return Rectangle()
             .fill(Color.white.opacity(0.6))
             .frame(width: 2)
             .frame(height: CGFloat(viewModel.totalRows) * cellHeight)
             .offset(x: x)
             .allowsHitTesting(false)
-            .animation(.linear(duration: 60.0 / viewModel.bpm / 4.0), value: viewModel.currentBeat)
+            .animation(.linear(duration: 60.0 / viewModel.bpm / 48.0), value: viewModel.currentTick)
     }
 
     // MARK: - Helpers
 
-    private func noteColor(row: Int) -> Color {
-        let hue = Double(row % 12) / 12.0
-        return Color(hue: hue, saturation: 0.7, brightness: 0.85)
+    private func timbreColor(_ timbre: Timbre) -> Color {
+        switch timbre {
+        case .sine:     return Color(red: 0.29, green: 0.56, blue: 0.85)
+        case .square:   return Color(red: 0.31, green: 0.78, blue: 0.47)
+        case .triangle: return Color(red: 0.61, green: 0.35, blue: 0.71)
+        case .sawtooth: return Color(red: 0.90, green: 0.49, blue: 0.13)
+        case .pulse:    return Color(red: 0.91, green: 0.12, blue: 0.55)
+        case .noise:    return Color(red: 0.56, green: 0.56, blue: 0.58)
+        }
     }
 }
 

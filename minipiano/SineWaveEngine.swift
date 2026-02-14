@@ -11,7 +11,7 @@ import Foundation
 // MARK: - Timbre/音色 definition
 
 /// 8-bit retro gaming style timbres
-enum Timbre: String, CaseIterable {
+enum Timbre: String, CaseIterable, Codable {
     case sine = "正弦波"
     case square = "方波"
     case triangle = "三角波"

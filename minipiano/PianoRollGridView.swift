@@ -14,8 +14,11 @@ struct PianoRollGridView: View {
     @Binding var selectedNoteID: UUID?
     var bottomInset: CGFloat = 0
 
-    private let cellWidth  = PianoRollLayout.cellWidth
-    private let cellHeight = PianoRollLayout.cellHeight
+    @State private var timeScale: CGFloat = 1.0
+    @State private var pitchScale: CGFloat = 1.0
+
+    private var cellWidth: CGFloat  { PianoRollLayout.cellWidth * timeScale }
+    private var cellHeight: CGFloat { PianoRollLayout.cellHeight * pitchScale }
     private let keyLabelWidth = PianoRollLayout.keyLabelWidth
     private let measureHeaderHeight: CGFloat = 28
 
@@ -64,6 +67,7 @@ struct PianoRollGridView: View {
                     }
                 }
             }
+            .background(DirectionalPinchZoom(timeScale: $timeScale, pitchScale: $pitchScale))
         }
         .coordinateSpace(name: "pianoRollVScroll")
         .scrollIndicators(.visible)
@@ -447,5 +451,156 @@ struct PianoRollNotesLayerView: View {
                 viewModel.resizeNote(noteID: note.id, toDuration: aligned)
                 noteResizeDelta = 0
             }
+    }
+}
+
+// MARK: - Directional Pinch-to-Zoom
+
+/// The dominant axis determined when a pinch gesture begins.
+private enum PinchZoomDirection {
+    case horizontal   // scale time axis only
+    case vertical     // scale pitch axis only
+    case uniform      // scale both axes
+}
+
+/// Attaches a directional 2-finger pinch gesture recognizer to the nearest ancestor
+/// UIScrollView, enabling independent horizontal/vertical zoom on the piano roll grid.
+///
+/// Direction is locked when the gesture starts based on the angle between the two fingers:
+///   - Nearly horizontal (< 30°) → zoom time axis only
+///   - Nearly vertical   (> 60°) → zoom pitch axis only
+///   - In between                → zoom both axes
+private struct DirectionalPinchZoom: UIViewRepresentable {
+    @Binding var timeScale: CGFloat
+    @Binding var pitchScale: CGFloat
+
+    func makeCoordinator() -> Coordinator { Coordinator(timeScale: $timeScale, pitchScale: $pitchScale) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = PinchAnchorView()
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.timeScaleBinding = $timeScale
+        context.coordinator.pitchScaleBinding = $pitchScale
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    // MARK: Anchor view
+
+    /// An invisible view inserted into the hierarchy. On appearing it walks up
+    /// the UIKit view tree to find the nearest UIScrollView and attaches
+    /// a UIPinchGestureRecognizer to it.
+    final class PinchAnchorView: UIView {
+        weak var coordinator: Coordinator?
+        private var didAttach = false
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil, !didAttach else { return }
+            didAttach = true
+            // Delay one run-loop so the full UIKit hierarchy is available.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let coordinator = self.coordinator else { return }
+                coordinator.attach(from: self)
+            }
+        }
+    }
+
+    // MARK: Coordinator
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var timeScaleBinding: Binding<CGFloat>
+        var pitchScaleBinding: Binding<CGFloat>
+        private weak var pinchGR: UIPinchGestureRecognizer?
+
+        private var baseTimeScale: CGFloat = 1
+        private var basePitchScale: CGFloat = 1
+        private var direction: PinchZoomDirection = .uniform
+
+        init(timeScale: Binding<CGFloat>, pitchScale: Binding<CGFloat>) {
+            self.timeScaleBinding = timeScale
+            self.pitchScaleBinding = pitchScale
+        }
+
+        // MARK: Attach / Detach
+
+        func attach(from view: UIView) {
+            // Walk up and find the first (nearest) UIScrollView.
+            var current: UIView? = view
+            while let v = current {
+                if let sv = v as? UIScrollView {
+                    let gr = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+                    gr.delegate = self
+                    sv.addGestureRecognizer(gr)
+                    self.pinchGR = gr
+                    return
+                }
+                current = v.superview
+            }
+        }
+
+        func detach() {
+            if let gr = pinchGR, let view = gr.view {
+                view.removeGestureRecognizer(gr)
+            }
+        }
+
+        // MARK: UIGestureRecognizerDelegate
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool { true }
+
+        // MARK: Pinch handling
+
+        @objc func handlePinch(_ gr: UIPinchGestureRecognizer) {
+            switch gr.state {
+            case .began:
+                baseTimeScale = timeScaleBinding.wrappedValue
+                basePitchScale = pitchScaleBinding.wrappedValue
+                direction = detectDirection(gr)
+
+            case .changed:
+                let s = gr.scale
+                switch direction {
+                case .horizontal:
+                    timeScaleBinding.wrappedValue = clamp(baseTimeScale * s, lo: 0.25, hi: 5.0)
+                case .vertical:
+                    pitchScaleBinding.wrappedValue = clamp(basePitchScale * s, lo: 0.5, hi: 3.0)
+                case .uniform:
+                    timeScaleBinding.wrappedValue = clamp(baseTimeScale * s, lo: 0.25, hi: 5.0)
+                    pitchScaleBinding.wrappedValue = clamp(basePitchScale * s, lo: 0.5, hi: 3.0)
+                }
+
+            default:
+                break
+            }
+        }
+
+        // MARK: Helpers
+
+        /// Determine the dominant pinch axis from the angle between the two fingers.
+        private func detectDirection(_ gr: UIPinchGestureRecognizer) -> PinchZoomDirection {
+            guard gr.numberOfTouches >= 2 else { return .uniform }
+            let p1 = gr.location(ofTouch: 0, in: gr.view)
+            let p2 = gr.location(ofTouch: 1, in: gr.view)
+            let angle = atan2(abs(p2.y - p1.y), abs(p2.x - p1.x))  // 0 = horizontal, π/2 = vertical
+            if angle < .pi / 6 { return .horizontal }
+            if angle > .pi / 3 { return .vertical }
+            return .uniform
+        }
+
+        private func clamp(_ value: CGFloat, lo: CGFloat, hi: CGFloat) -> CGFloat {
+            Swift.max(lo, Swift.min(hi, value))
+        }
     }
 }

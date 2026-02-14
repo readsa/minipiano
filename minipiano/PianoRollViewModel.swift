@@ -103,8 +103,21 @@ final class PianoRollViewModel {
 
     // Audio engine
     private var engine = SineWaveEngine()
-    private var playbackTimer: Timer?
     private var activeNoteIDs: Set<String> = []
+
+    /// Dedicated high-priority queue for audio tick processing.
+    /// Keeps note triggering independent of main-thread rendering load.
+    private let audioQueue = DispatchQueue(label: "com.minipiano.audioPlayback", qos: .userInteractive)
+    private var audioTimer: DispatchSourceTimer?
+    /// The last tick that was actually processed for audio (accessed only on audioQueue).
+    private var lastAudioTick: Int = 0
+    /// Snapshot of notes captured at play() time, used on audioQueue to avoid
+    /// cross-thread access to the @Observable `notes` array.
+    private var playbackNotes: [RollNote] = []
+    /// Snapshot of bpm captured at play() time.
+    private var playbackBPM: Double = 120
+    /// Snapshot of totalTicks captured at play() time.
+    private var playbackTotalTicks: Int = 0
 
     // MARK: - Init (auto-restore)
 
@@ -204,23 +217,31 @@ final class PianoRollViewModel {
         playbackStartTick = playheadTick
         playbackStartDate = Date()
 
-        let interval = 60.0 / bpm / 48.0  // seconds per tick
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.tick()
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        playbackTimer = timer
+        // Snapshot state for the audio queue to avoid cross-thread @Observable access
+        playbackNotes = notes
+        playbackBPM = bpm
+        playbackTotalTicks = totalTicks
+
+        startAudioTimer(fromTick: playheadTick)
     }
 
     /// Pause playback, keeping the playhead at the current position.
     func pause() {
         guard isPlaying else { return }
+        stopAudioTimer()
         isPlaying = false
-        playbackTimer?.invalidate()
-        playbackTimer = nil
-        playheadTick = currentTick
+        // Compute the actual tick from wall-clock time for accuracy
+        if let start = playbackStartDate {
+            let elapsed = Date().timeIntervalSince(start)
+            let ticksPerSecond = playbackBPM / 60.0 * 48.0
+            let tick = playbackStartTick + Int(elapsed * ticksPerSecond)
+            playheadTick = min(tick, playbackTotalTicks)
+            currentTick = playheadTick
+        }
         playbackStartDate = nil
-        stopAllActiveNotes()
+        audioQueue.async { [weak self] in
+            self?.stopAllActiveNotes()
+        }
     }
 
     /// Toggle between play and pause.
@@ -230,13 +251,14 @@ final class PianoRollViewModel {
 
     /// Full stop: pause and reset playhead to 0.
     func stop() {
+        stopAudioTimer()
         isPlaying = false
-        playbackTimer?.invalidate()
-        playbackTimer = nil
         currentTick = 0
         playheadTick = 0
         playbackStartDate = nil
-        stopAllActiveNotes()
+        audioQueue.async { [weak self] in
+            self?.stopAllActiveNotes()
+        }
     }
 
     /// Seek to a specific tick position.
@@ -245,10 +267,10 @@ final class PianoRollViewModel {
     func seek(toTick tick: Int) {
         let clamped = max(0, min(tick, totalTicks))
         if isPlaying {
-            // Stop current playback, seek, restart
-            stopAllActiveNotes()
-            playbackTimer?.invalidate()
-            playbackTimer = nil
+            stopAudioTimer()
+            audioQueue.async { [weak self] in
+                self?.stopAllActiveNotes()
+            }
             isPlaying = false
 
             playheadTick = clamped
@@ -271,50 +293,114 @@ final class PianoRollViewModel {
         }
     }
 
-    private func stopAllActiveNotes() {
-        for id in activeNoteIDs { engine.noteOff(id: id) }
-        activeNoteIDs.removeAll()
+    // MARK: - Audio timer (background queue)
+
+    /// Start the background audio timer that processes note events.
+    private func startAudioTimer(fromTick startTick: Int) {
+        lastAudioTick = startTick
+
+        let interval = 60.0 / playbackBPM / 48.0  // seconds per tick
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: audioQueue)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .microseconds(500))
+        timer.setEventHandler { [weak self] in
+            self?.audioTick()
+        }
+        timer.resume()
+        audioTimer = timer
     }
 
-    private func tick() {
-        if currentTick >= totalTicks {
-            if isLooping {
-                // Loop: restart from beginning
+    /// Stop and clean up the background audio timer.
+    private func stopAudioTimer() {
+        audioTimer?.cancel()
+        audioTimer = nil
+    }
+
+    /// Called on audioQueue. Uses wall-clock time to determine the expected tick,
+    /// then processes all notes between lastAudioTick and the expected tick.
+    /// This catch-up approach ensures audio stays in sync even if individual
+    /// timer fires are delayed (e.g. during heavy UI rendering).
+    private func audioTick() {
+        guard let startDate = playbackStartDate else { return }
+
+        let elapsed = Date().timeIntervalSince(startDate)
+        let ticksPerSecond = playbackBPM / 60.0 * 48.0
+        var expectedTick = playbackStartTick + Int(elapsed * ticksPerSecond)
+
+        let totalTicks = playbackTotalTicks
+        let isLoop = isLooping
+
+        if expectedTick >= totalTicks {
+            if isLoop {
+                // Process remaining notes up to end, then wrap
+                processNotes(from: lastAudioTick, to: totalTicks)
                 stopAllActiveNotes()
-                currentTick = 0
-                playheadTick = 0
-                playbackStartTick = 0
-                playbackStartDate = Date()
+
+                // Reset for next loop iteration
+                let overshoot = expectedTick - totalTicks
+                lastAudioTick = 0
+                expectedTick = overshoot % totalTicks
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.playbackStartTick = 0
+                    self.playbackStartDate = Date()
+                    self.currentTick = 0
+                    self.playheadTick = 0
+                }
+                // Process notes for the overshot portion
+                processNotes(from: 0, to: expectedTick)
+                lastAudioTick = expectedTick
                 return
             } else {
-                // End of track
-                isPlaying = false
-                playbackTimer?.invalidate()
-                playbackTimer = nil
-                playheadTick = 0
-                currentTick = 0
-                playbackStartDate = nil
-                stopAllActiveNotes()
+                // Play remaining notes, then stop
+                processNotes(from: lastAudioTick, to: totalTicks)
+                stopAudioTimer()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.isPlaying = false
+                    self.playheadTick = 0
+                    self.currentTick = 0
+                    self.playbackStartDate = nil
+                }
                 return
             }
         }
 
-        let starting = notes.filter { $0.startTick == currentTick }
-        for note in starting {
+        // Normal case: process notes from last to expected
+        processNotes(from: lastAudioTick, to: expectedTick)
+        lastAudioTick = expectedTick
+
+        // Update UI state (throttled: main thread picks it up naturally)
+        DispatchQueue.main.async { [weak self] in
+            self?.currentTick = expectedTick
+            self?.playheadTick = expectedTick
+        }
+    }
+
+    /// Process (trigger) all notes whose startTick falls in [from, to).
+    /// Called on audioQueue.
+    private func processNotes(from: Int, to: Int) {
+        guard from < to else { return }
+        let notesToTrigger = playbackNotes.filter { n in
+            n.startTick >= from && n.startTick < to
+        }
+        for note in notesToTrigger {
             let noteID = "roll_\(note.id)"
             engine.currentTimbre = note.timbre
             engine.noteOn(id: noteID, frequency: frequencies[note.row])
             activeNoteIDs.insert(noteID)
 
-            let dur = 60.0 / bpm / 48.0 * Double(note.durationTicks)
-            DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in
+            let dur = 60.0 / playbackBPM / 48.0 * Double(note.durationTicks)
+            audioQueue.asyncAfter(deadline: .now() + dur) { [weak self] in
                 self?.engine.noteOff(id: noteID)
                 self?.activeNoteIDs.remove(noteID)
             }
         }
+    }
 
-        playheadTick = currentTick
-        currentTick += 1
+    private func stopAllActiveNotes() {
+        for id in activeNoteIDs { engine.noteOff(id: id) }
+        activeNoteIDs.removeAll()
     }
 
     /// Clear all notes

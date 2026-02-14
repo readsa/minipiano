@@ -41,6 +41,7 @@ final class PianoRollViewModel {
     var bpm: Double = 120
     var isPlaying = false
     var currentTick: Int = 0
+    var playbackStartDate: Date? = nil
 
     // Audio configuration
     var selectedTimbre: Timbre = .sine
@@ -189,11 +190,14 @@ final class PianoRollViewModel {
         guard !isPlaying else { return }
         isPlaying = true
         currentTick = 0
+        playbackStartDate = Date()
 
         let interval = 60.0 / bpm / 48.0  // seconds per tick
-        playbackTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        playbackTimer = timer
     }
 
     func stop() {
@@ -201,6 +205,7 @@ final class PianoRollViewModel {
         playbackTimer?.invalidate()
         playbackTimer = nil
         currentTick = 0
+        playbackStartDate = nil
         for id in activeNoteIDs { engine.noteOff(id: id) }
         activeNoteIDs.removeAll()
     }

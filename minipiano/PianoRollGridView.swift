@@ -41,6 +41,7 @@ struct PianoRollGridView: View {
                             width: CGFloat(viewModel.totalBeats) * cellWidth,
                             height: CGFloat(viewModel.totalRows) * cellHeight
                         )
+                        .padding(.trailing, cellWidth)
                     }
                 }
             }
@@ -149,14 +150,24 @@ struct PianoRollGridView: View {
     // MARK: - Playhead
 
     private var playheadView: some View {
-        let x = CGFloat(viewModel.currentTick) * pixelsPerTick
-        return Rectangle()
-            .fill(Color.white.opacity(0.6))
-            .frame(width: 2)
-            .frame(height: CGFloat(viewModel.totalRows) * cellHeight)
-            .offset(x: x)
-            .allowsHitTesting(false)
-            .animation(.linear(duration: 60.0 / viewModel.bpm / 48.0), value: viewModel.currentTick)
+        TimelineView(.animation) { timeline in
+            let smoothTick: CGFloat = {
+                guard let start = viewModel.playbackStartDate else {
+                    return CGFloat(viewModel.currentTick)
+                }
+                let elapsed = timeline.date.timeIntervalSince(start)
+                let ticksPerSecond = viewModel.bpm / 60.0 * 48.0
+                let tick = elapsed * ticksPerSecond
+                return min(CGFloat(tick), CGFloat(viewModel.totalTicks))
+            }()
+            let x = smoothTick * pixelsPerTick
+            Rectangle()
+                .fill(Color.white.opacity(0.6))
+                .frame(width: 2)
+                .frame(height: CGFloat(viewModel.totalRows) * cellHeight)
+                .offset(x: x)
+                .allowsHitTesting(false)
+        }
     }
 }
 

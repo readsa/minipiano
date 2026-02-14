@@ -87,6 +87,9 @@ final class PianoRollViewModel {
     var bpm: Double = 120
     var isPlaying = false
     var currentBeat: Double = 0
+    
+    // Audio configuration
+    var selectedTimbre: Timbre = .sine
 
     // Project management
     var projectName: String = "未命名工程"
@@ -165,6 +168,7 @@ final class PianoRollViewModel {
     /// Play a short preview of a note when placed
     private func previewNote(row: Int) {
         let previewID = "preview_\(UUID())"
+        engine.currentTimbre = selectedTimbre
         engine.noteOn(id: previewID, frequency: frequencies[row])
         let stepDuration = 60.0 / bpm / 4.0
         DispatchQueue.main.asyncAfter(deadline: .now() + stepDuration) { [weak self] in
@@ -219,6 +223,7 @@ final class PianoRollViewModel {
         let startingNotes = notes.filter { $0.column == beatIndex }
         for note in startingNotes {
             let noteID = "roll_\(note.id)"
+            engine.currentTimbre = selectedTimbre
             engine.noteOn(id: noteID, frequency: frequencies[note.row])
             activeNoteIDs.insert(noteID)
 
@@ -557,6 +562,33 @@ struct PianoRollView: View {
                 Text("🎼 钢琴卷帘")
                     .font(.headline)
                     .foregroundColor(.white)
+
+                // Timbre selector
+                Menu {
+                    ForEach(Timbre.allCases, id: \.self) { timbre in
+                        Button(action: {
+                            viewModel.selectedTimbre = timbre
+                        }) {
+                            HStack {
+                                Text(timbre.displayName)
+                                if viewModel.selectedTimbre == timbre {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "waveform")
+                        Text(viewModel.selectedTimbre.displayName)
+                            .font(.caption)
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(8)
+                }
 
                 // Undo
                 Button { viewModel.undo() } label: {

@@ -12,6 +12,7 @@ import SwiftUI
 struct PianoRollGridView: View {
     var viewModel: PianoRollViewModel
     @Binding var selectedNoteID: UUID?
+    var bottomInset: CGFloat = 0
 
     private let cellWidth  = PianoRollLayout.cellWidth
     private let cellHeight = PianoRollLayout.cellHeight
@@ -47,6 +48,7 @@ struct PianoRollGridView: View {
                         .frame(width: gridWidth, height: gridHeight)
                     }
                     .padding(.trailing, cellWidth)
+                    .padding(.bottom, bottomInset)
                     .overlay(alignment: .topLeading) {
                         GeometryReader { geo in
                             let offset = geo.frame(in: .named("pianoRollVScroll")).minY

@@ -3,13 +3,13 @@
 //  minipiano
 //
 //  Created on 2026/2/13.
-//  Refactored on 2026/2/14 — now a slim composition root.
+//  Redesigned on 2026/2/14 — modern NavigationStack layout.
 //
 //  Sub-components:
 //    PianoRollModels.swift         – RollNote, PianoRollProject, ProjectFileInfo, Timbre.color
 //    PianoRollViewModel.swift      – PianoRollViewModel (business logic, playback, persistence)
-//    PianoRollToolbarView.swift    – Top toolbar (timbre, BPM, undo/redo, measures, save/load)
-//    PianoRollNoteEditingBar.swift – Contextual note editing bar
+//    PianoRollToolbarView.swift    – Parameter strip (timbre, BPM, beats, measures)
+//    PianoRollNoteEditingBar.swift – Floating note inspector card
 //    PianoRollGridView.swift       – Grid canvas, key labels, notes layer, playhead, drag gestures
 //    PianoRollProjectSheets.swift  – Save / Load project sheets
 //
@@ -22,38 +22,104 @@ struct PianoRollView: View {
     var onBack: () -> Void = {}
     @State private var viewModel = PianoRollViewModel()
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     // Editing state (shared with child views via @Binding)
     @State private var selectedNoteID: UUID? = nil
 
+    private var isPortrait: Bool { verticalSizeClass == .regular }
+
     var body: some View {
-        ZStack {
-            Color(red: 0.12, green: 0.12, blue: 0.15)
-                .ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                Color(red: 0.12, green: 0.12, blue: 0.15)
+                    .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Top toolbar
-                PianoRollToolbarView(viewModel: viewModel, selectedNoteID: $selectedNoteID)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                VStack(spacing: 0) {
+                    // Project name row (portrait only)
+                    if isPortrait {
+                        projectNameBar
+                    }
 
-                // Note editing toolbar (shown when a note is selected)
-                if let selID = selectedNoteID,
-                   let note = viewModel.notes.first(where: { $0.id == selID }) {
-                    PianoRollNoteEditingBar(viewModel: viewModel, note: note, selectedNoteID: $selectedNoteID)
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 6)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    // Compact parameter strip
+                    PianoRollParameterStrip(viewModel: viewModel, selectedNoteID: $selectedNoteID)
+
+                    // Piano roll grid
+                    PianoRollGridView(
+                        viewModel: viewModel,
+                        selectedNoteID: $selectedNoteID,
+                        bottomInset: selectedNoteID != nil ? 220 : 0
+                    )
                 }
 
-                // Piano roll grid
-                PianoRollGridView(viewModel: viewModel, selectedNoteID: $selectedNoteID)
+                // Floating note inspector card (bottom)
+                if let selID = selectedNoteID,
+                   let note = viewModel.notes.first(where: { $0.id == selID }) {
+                    VStack {
+                        Spacer()
+                        NoteInspectorCard(viewModel: viewModel, note: note, selectedNoteID: $selectedNoteID)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                // MARK: Leading — Back
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        viewModel.autoSave()
+                        viewModel.stop()
+                        onBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                }
 
-            // Back button – bottom-left
-            backButton
+                // MARK: Principal — Project name (landscape only)
+                if !isPortrait {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 5) {
+                            Text(viewModel.projectName)
+                                .font(.subheadline.weight(.medium))
+                                .lineLimit(1)
+                            if viewModel.hasUnsavedChanges {
+                                Circle()
+                                    .fill(.orange)
+                                    .frame(width: 6, height: 6)
+                            }
+                        }
+                    }
+                }
+
+                // MARK: Trailing — Undo, Redo, Play, File menu
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { viewModel.undo() } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .disabled(!viewModel.canUndo)
+
+                    Button { viewModel.redo() } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                    }
+                    .disabled(!viewModel.canRedo)
+
+                    Button {
+                        if viewModel.isPlaying { viewModel.stop() } else { viewModel.play() }
+                    } label: {
+                        Image(systemName: viewModel.isPlaying ? "stop.fill" : "play.fill")
+                            .foregroundStyle(viewModel.isPlaying ? .red : .green)
+                    }
+
+                    fileMenu
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: selectedNoteID)
         }
-        .animation(.easeInOut(duration: 0.2), value: selectedNoteID)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background || newPhase == .inactive {
                 viewModel.autoSave()
@@ -88,31 +154,65 @@ struct PianoRollView: View {
         }
     }
 
-    // MARK: - Back button
+    // MARK: - File menu (Save / Load / Clear)
 
-    private var backButton: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Button(action: {
-                    viewModel.autoSave()
-                    viewModel.stop()
-                    onBack()
-                }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                        Text("返回")
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(Color.black.opacity(0.7))
-                    .foregroundColor(.white)
-                    .cornerRadius(20)
-                }
-                .padding(.leading, 20)
-                .padding(.bottom, 30)
-                Spacer()
+    // MARK: - Project name bar (portrait)
+
+    private var projectNameBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "music.note.list")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Text(viewModel.projectName)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+            if viewModel.hasUnsavedChanges {
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 7, height: 7)
             }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.2)
+        }
+    }
+
+    private var fileMenu: some View {
+        Menu {
+            Section {
+                Button {
+                    viewModel.saveNameInput = viewModel.projectName
+                    viewModel.showSaveSheet = true
+                } label: {
+                    Label("保存工程", systemImage: "square.and.arrow.down")
+                }
+
+                Button {
+                    if viewModel.hasUnsavedChanges && !viewModel.notes.isEmpty {
+                        viewModel.showUnsavedAlert = true
+                    } else {
+                        viewModel.refreshSavedProjects()
+                        viewModel.showLoadSheet = true
+                    }
+                } label: {
+                    Label("加载工程", systemImage: "folder")
+                }
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    if !viewModel.notes.isEmpty { viewModel.showClearConfirm = true }
+                } label: {
+                    Label("清除所有音符", systemImage: "trash")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
     }
 }

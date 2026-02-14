@@ -3,43 +3,35 @@
 //  minipiano
 //
 //  Refactored from PianoRollView.swift on 2026/2/14.
+//  Redesigned as a compact parameter strip on 2026/2/14.
 //
 
 import SwiftUI
 
-/// The top toolbar for the piano roll, containing timbre selection,
-/// beats‐per‐measure, undo/redo, BPM, playback, measures, and save/load controls.
-struct PianoRollToolbarView: View {
+/// A compact parameter strip below the navigation bar.
+/// Contains timbre picker, beats-per-measure, BPM slider, and measure controls.
+struct PianoRollParameterStrip: View {
     var viewModel: PianoRollViewModel
     @Binding var selectedNoteID: UUID?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
-                titleLabel
+            HStack(spacing: 20) {
                 timbreMenu
+                separator
                 beatsPerMeasureMenu
-                undoRedoButtons
-                divider
+                separator
                 bpmControl
-                playStopButton
-                clearButton
+                separator
                 measureControls
-                divider
-                saveButton
-                loadButton
-                unsavedIndicator
             }
-            .padding(.trailing, 12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
-    }
-
-    // MARK: - Title
-
-    private var titleLabel: some View {
-        Text("🎼 钢琴卷帘")
-            .font(.headline)
-            .foregroundColor(.white)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.3)
+        }
     }
 
     // MARK: - Timbre selector
@@ -50,8 +42,9 @@ struct PianoRollToolbarView: View {
                 Button {
                     viewModel.selectedTimbre = timbre
                 } label: {
-                    HStack {
+                    Label {
                         Text(timbre.displayName)
+                    } icon: {
                         if viewModel.selectedTimbre == timbre {
                             Image(systemName: "checkmark")
                         }
@@ -59,19 +52,21 @@ struct PianoRollToolbarView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Circle()
                     .fill(viewModel.selectedTimbre.color)
                     .frame(width: 10, height: 10)
-                Image(systemName: "waveform")
-                Text("画笔: \(viewModel.selectedTimbre.displayName)")
-                    .font(.caption)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(.white.opacity(0.5), lineWidth: 1)
+                    }
+                Text(viewModel.selectedTimbre.displayName)
+                    .font(.subheadline.weight(.medium))
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(8)
+            .foregroundStyle(.white)
         }
     }
 
@@ -84,8 +79,9 @@ struct PianoRollToolbarView: View {
                     selectedNoteID = nil
                     viewModel.setBeatsPerMeasure(n)
                 } label: {
-                    HStack {
+                    Label {
                         Text("每小节 \(n) 拍")
+                    } icon: {
                         if viewModel.beatsPerMeasure == n {
                             Image(systemName: "checkmark")
                         }
@@ -93,42 +89,18 @@ struct PianoRollToolbarView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: "metronome.fill")
-                Text("\(viewModel.beatsPerMeasure)拍/小节")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(viewModel.beatsPerMeasure)")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .contentTransition(.numericText())
+                Text("拍/小节")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(8)
-        }
-    }
-
-    // MARK: - Undo / Redo
-
-    private var undoRedoButtons: some View {
-        HStack(spacing: 12) {
-            Button { viewModel.undo() } label: {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.body)
-                    .foregroundColor(viewModel.canUndo ? .white : .gray.opacity(0.3))
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(8)
-            }
-            .disabled(!viewModel.canUndo)
-
-            Button { viewModel.redo() } label: {
-                Image(systemName: "arrow.uturn.forward")
-                    .font(.body)
-                    .foregroundColor(viewModel.canRedo ? .white : .gray.opacity(0.3))
-                    .frame(width: 36, height: 36)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(8)
-            }
-            .disabled(!viewModel.canRedo)
+            .foregroundStyle(.white)
         }
     }
 
@@ -136,137 +108,63 @@ struct PianoRollToolbarView: View {
 
     private var bpmControl: some View {
         HStack(spacing: 6) {
-            Text("BPM")
+            Image(systemName: "waveform.path")
                 .font(.caption)
-                .foregroundColor(.gray)
+                .foregroundStyle(.secondary)
             Text("\(Int(viewModel.bpm))")
-                .font(.system(.body, design: .monospaced))
-                .foregroundColor(.orange)
-                .frame(width: 36)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.orange)
+                .contentTransition(.numericText())
+                .frame(minWidth: 30, alignment: .trailing)
             Slider(value: Bindable(viewModel).bpm, in: 40...240, step: 1)
                 .frame(width: 100)
                 .tint(.orange)
-        }
-    }
-
-    // MARK: - Play / Stop
-
-    private var playStopButton: some View {
-        Button {
-            if viewModel.isPlaying { viewModel.stop() } else { viewModel.play() }
-        } label: {
-            Image(systemName: viewModel.isPlaying ? "stop.fill" : "play.fill")
-                .font(.title2)
-                .foregroundColor(viewModel.isPlaying ? .red : .green)
-                .frame(width: 44, height: 44)
-                .background(Color.white.opacity(0.1))
-                .cornerRadius(8)
-        }
-    }
-
-    // MARK: - Clear
-
-    private var clearButton: some View {
-        Button {
-            if !viewModel.notes.isEmpty { viewModel.showClearConfirm = true }
-        } label: {
-            Image(systemName: "trash")
-                .font(.body)
-                .foregroundColor(.gray)
-                .frame(width: 36, height: 36)
-                .background(Color.white.opacity(0.1))
-                .cornerRadius(8)
+            Text("BPM")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
     // MARK: - Measures
 
     private var measureControls: some View {
-        HStack(spacing: 4) {
-            Button { viewModel.removeMeasure() } label: {
+        HStack(spacing: 6) {
+            Button {
+                viewModel.removeMeasure()
+            } label: {
                 Image(systemName: "minus")
                     .font(.caption.bold())
-                    .foregroundColor(viewModel.measures <= 1 ? .gray.opacity(0.3) : .white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(6)
+                    .frame(width: 26, height: 26)
+                    .background(.white.opacity(0.1), in: .rect(cornerRadius: 6))
             }
             .disabled(viewModel.measures <= 1)
 
-            Text("\(viewModel.measures)小节")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundColor(.white)
-                .frame(minWidth: 46)
+            Text("\(viewModel.measures)")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.white)
+                .contentTransition(.numericText())
+                .frame(minWidth: 20, alignment: .center)
 
-            Button { viewModel.addMeasure() } label: {
+            Button {
+                viewModel.addMeasure()
+            } label: {
                 Image(systemName: "plus")
                     .font(.caption.bold())
-                    .foregroundColor(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.white.opacity(0.1))
-                    .cornerRadius(6)
+                    .frame(width: 26, height: 26)
+                    .background(.white.opacity(0.1), in: .rect(cornerRadius: 6))
             }
-        }
-    }
 
-    // MARK: - Save / Load
-
-    private var saveButton: some View {
-        Button {
-            viewModel.saveNameInput = viewModel.projectName
-            viewModel.showSaveSheet = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "square.and.arrow.down")
-                Text("保存")
-            }
-            .font(.caption)
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(8)
-        }
-    }
-
-    private var loadButton: some View {
-        Button {
-            if viewModel.hasUnsavedChanges && !viewModel.notes.isEmpty {
-                viewModel.showUnsavedAlert = true
-            } else {
-                viewModel.refreshSavedProjects()
-                viewModel.showLoadSheet = true
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "folder")
-                Text("加载")
-            }
-            .font(.caption)
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.1))
-            .cornerRadius(8)
-        }
-    }
-
-    // MARK: - Unsaved indicator
-
-    @ViewBuilder
-    private var unsavedIndicator: some View {
-        if viewModel.hasUnsavedChanges {
-            Text("● 未保存")
+            Text("小节")
                 .font(.caption2)
-                .foregroundColor(.orange)
+                .foregroundStyle(.secondary)
         }
     }
 
-    // MARK: - Reusable divider
+    // MARK: - Reusable separator
 
-    private var divider: some View {
-        Divider()
-            .frame(height: 28)
-            .background(Color.white.opacity(0.2))
+    private var separator: some View {
+        RoundedRectangle(cornerRadius: 0.5)
+            .fill(.white.opacity(0.15))
+            .frame(width: 1, height: 22)
     }
 }

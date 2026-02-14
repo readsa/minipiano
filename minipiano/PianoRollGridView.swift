@@ -16,6 +16,7 @@ struct PianoRollGridView: View {
     private let cellWidth  = PianoRollLayout.cellWidth
     private let cellHeight = PianoRollLayout.cellHeight
     private let keyLabelWidth = PianoRollLayout.keyLabelWidth
+    private let measureHeaderHeight: CGFloat = 28
 
     /// Pixels per tick, derived from cellWidth and current ticksPerBeat
     private var pixelsPerTick: CGFloat {
@@ -23,13 +24,19 @@ struct PianoRollGridView: View {
     }
 
     var body: some View {
-        GeometryReader { _ in
-            ScrollView(.vertical, showsIndicators: true) {
-                HStack(alignment: .top, spacing: 0) {
-                    pianoKeyLabels
-                        .frame(width: keyLabelWidth)
+        let gridWidth = CGFloat(viewModel.totalBeats) * cellWidth
+        let gridHeight = CGFloat(viewModel.totalRows) * cellHeight
 
-                    ScrollView(.horizontal, showsIndicators: true) {
+        ScrollView(.vertical) {
+            HStack(alignment: .top, spacing: 0) {
+                pianoKeyLabels
+                    .padding(.top, measureHeaderHeight)
+                    .frame(width: keyLabelWidth)
+
+                ScrollView(.horizontal) {
+                    VStack(spacing: 0) {
+                        Color.clear.frame(height: measureHeaderHeight)
+
                         ZStack(alignment: .topLeading) {
                             gridBackground
                             notesLayer
@@ -37,17 +44,22 @@ struct PianoRollGridView: View {
                                 playheadView
                             }
                         }
-                        .frame(
-                            width: CGFloat(viewModel.totalBeats) * cellWidth,
-                            height: CGFloat(viewModel.totalRows) * cellHeight
-                        )
-                        .padding(.trailing, cellWidth)
+                        .frame(width: gridWidth, height: gridHeight)
+                    }
+                    .padding(.trailing, cellWidth)
+                    .overlay(alignment: .topLeading) {
+                        GeometryReader { geo in
+                            let offset = geo.frame(in: .named("pianoRollVScroll")).minY
+                            measureHeaderBar(width: gridWidth + cellWidth)
+                                .offset(y: max(0, -offset))
+                        }
                     }
                 }
             }
-            .scrollIndicators(.visible)
-            .defaultScrollAnchor(.bottom)
         }
+        .coordinateSpace(name: "pianoRollVScroll")
+        .scrollIndicators(.visible)
+        .defaultScrollAnchor(.bottom)
     }
 
     // MARK: - Piano key labels
@@ -121,18 +133,41 @@ struct PianoRollGridView: View {
                 )
             }
 
-            // Measure numbers
-            for measure in 0..<viewModel.measures {
-                let x = CGFloat(measure * bpm) * cellWidth + 2
-                context.draw(
-                    Text("\(measure + 1)")
-                        .font(.system(size: 9))
-                        .foregroundColor(.gray),
-                    at: CGPoint(x: x + 8, y: 6)
-                )
-            }
         }
         .allowsHitTesting(false)
+    }
+
+    // MARK: - Measure header bar
+
+    /// Sticky header showing measure numbers, scrolls horizontally with grid.
+    private func measureHeaderBar(width: CGFloat) -> some View {
+        ZStack(alignment: .topLeading) {
+            // Background
+            Rectangle()
+                .fill(Color(red: 0.14, green: 0.14, blue: 0.17))
+
+            // Bottom border
+            VStack { Spacer(); Rectangle().fill(Color.white.opacity(0.15)).frame(height: 1) }
+
+            // Measure numbers & dividers
+            let bpm = viewModel.beatsPerMeasure
+            let measureWidth = CGFloat(bpm) * cellWidth
+            ForEach(0..<viewModel.measures, id: \.self) { measure in
+                let x = CGFloat(measure) * measureWidth
+                // Divider line
+                Rectangle()
+                    .fill(Color.white.opacity(0.25))
+                    .frame(width: 1)
+                    .offset(x: x)
+                // Measure number label
+                Text("\(measure + 1)")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(Color.white.opacity(0.7))
+                    .offset(x: x + 6, y: 5)
+            }
+        }
+        .frame(width: width, height: measureHeaderHeight)
+        .clipped()
     }
 
     // MARK: - Notes layer

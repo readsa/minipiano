@@ -1,0 +1,312 @@
+//
+//  PianoRollGridView.swift
+//  minipiano
+//
+//  Refactored from PianoRollView.swift on 2026/2/14.
+//
+
+import SwiftUI
+
+/// The main piano roll grid area: key labels on the left, scrollable grid with
+/// note blocks and playhead on the right.
+struct PianoRollGridView: View {
+    var viewModel: PianoRollViewModel
+    @Binding var selectedNoteID: UUID?
+
+    private let cellWidth  = PianoRollLayout.cellWidth
+    private let cellHeight = PianoRollLayout.cellHeight
+    private let keyLabelWidth = PianoRollLayout.keyLabelWidth
+
+    /// Pixels per tick, derived from cellWidth and current ticksPerBeat
+    private var pixelsPerTick: CGFloat {
+        cellWidth / CGFloat(viewModel.ticksPerBeat)
+    }
+
+    var body: some View {
+        GeometryReader { _ in
+            ScrollView(.vertical, showsIndicators: true) {
+                HStack(alignment: .top, spacing: 0) {
+                    pianoKeyLabels
+                        .frame(width: keyLabelWidth)
+
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        ZStack(alignment: .topLeading) {
+                            gridBackground
+                            notesLayer
+                            if viewModel.isPlaying {
+                                playheadView
+                            }
+                        }
+                        .frame(
+                            width: CGFloat(viewModel.totalBeats) * cellWidth,
+                            height: CGFloat(viewModel.totalRows) * cellHeight
+                        )
+                    }
+                }
+            }
+            .scrollIndicators(.visible)
+            .defaultScrollAnchor(.bottom)
+        }
+    }
+
+    // MARK: - Piano key labels
+
+    private var pianoKeyLabels: some View {
+        VStack(spacing: 0) {
+            ForEach((0..<viewModel.totalRows).reversed(), id: \.self) { row in
+                let isBlack = viewModel.isBlackKey(row: row)
+                ZStack {
+                    Rectangle()
+                        .fill(isBlack ? Color(white: 0.2) : Color(white: 0.85))
+                    Text(viewModel.noteNames[row])
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundColor(isBlack ? .white : .black)
+                }
+                .frame(height: cellHeight)
+            }
+        }
+    }
+
+    // MARK: - Grid background
+
+    private var gridBackground: some View {
+        Canvas { context, size in
+            let rows = viewModel.totalRows
+            let totalBeats = viewModel.totalBeats
+            let bpm = viewModel.beatsPerMeasure
+
+            // Row backgrounds
+            for row in 0..<rows {
+                let displayRow = rows - 1 - row
+                let isBlack = viewModel.isBlackKey(row: row)
+                let rect = CGRect(
+                    x: 0,
+                    y: CGFloat(displayRow) * cellHeight,
+                    width: size.width,
+                    height: cellHeight
+                )
+                context.fill(
+                    Path(rect),
+                    with: .color(isBlack ? Color(white: 0.16) : Color(white: 0.20))
+                )
+            }
+
+            // Beat & measure vertical lines
+            for beat in 0...totalBeats {
+                let x = CGFloat(beat) * cellWidth
+                let isMeasureLine = beat % bpm == 0
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+                context.stroke(
+                    path,
+                    with: .color(isMeasureLine
+                                 ? Color.white.opacity(0.35)
+                                 : Color.white.opacity(0.1)),
+                    lineWidth: isMeasureLine ? 1.2 : 0.5
+                )
+            }
+
+            // Horizontal row lines
+            for row in 0...rows {
+                let y = CGFloat(row) * cellHeight
+                var path = Path()
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(
+                    path,
+                    with: .color(Color.white.opacity(0.08)),
+                    lineWidth: 0.5
+                )
+            }
+
+            // Measure numbers
+            for measure in 0..<viewModel.measures {
+                let x = CGFloat(measure * bpm) * cellWidth + 2
+                context.draw(
+                    Text("\(measure + 1)")
+                        .font(.system(size: 9))
+                        .foregroundColor(.gray),
+                    at: CGPoint(x: x + 8, y: 6)
+                )
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - Notes layer
+
+    private var notesLayer: some View {
+        PianoRollNotesLayerView(
+            viewModel: viewModel,
+            selectedNoteID: $selectedNoteID,
+            cellWidth: cellWidth,
+            cellHeight: cellHeight,
+            pixelsPerTick: pixelsPerTick
+        )
+    }
+
+    // MARK: - Playhead
+
+    private var playheadView: some View {
+        let x = CGFloat(viewModel.currentTick) * pixelsPerTick
+        return Rectangle()
+            .fill(Color.white.opacity(0.6))
+            .frame(width: 2)
+            .frame(height: CGFloat(viewModel.totalRows) * cellHeight)
+            .offset(x: x)
+            .allowsHitTesting(false)
+            .animation(.linear(duration: 60.0 / viewModel.bpm / 48.0), value: viewModel.currentTick)
+    }
+}
+
+// MARK: - Notes layer view
+
+/// Renders all note blocks on the grid and handles tap, drag, and resize gestures.
+struct PianoRollNotesLayerView: View {
+    var viewModel: PianoRollViewModel
+    @Binding var selectedNoteID: UUID?
+
+    let cellWidth: CGFloat
+    let cellHeight: CGFloat
+    let pixelsPerTick: CGFloat
+
+    @State private var noteDragOffset: CGFloat = 0
+    @State private var noteResizeDelta: CGFloat = 0
+
+    var body: some View {
+        let tpb = viewModel.ticksPerBeat
+
+        ZStack(alignment: .topLeading) {
+            // Tap targets per beat column
+            ForEach(0..<viewModel.totalRows, id: \.self) { row in
+                ForEach(0..<viewModel.totalBeats, id: \.self) { beat in
+                    let displayRow = viewModel.totalRows - 1 - row
+                    Color.clear
+                        .frame(width: cellWidth, height: cellHeight)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if selectedNoteID != nil {
+                                selectedNoteID = nil
+                                noteDragOffset = 0
+                                noteResizeDelta = 0
+                            } else {
+                                viewModel.toggleNote(row: row, beatIndex: beat)
+                            }
+                        }
+                        .offset(
+                            x: CGFloat(beat) * cellWidth,
+                            y: CGFloat(displayRow) * cellHeight
+                        )
+                }
+            }
+
+            // Rendered notes
+            ForEach(viewModel.notes) { note in
+                let isSelected = selectedNoteID == note.id
+                let displayRow = viewModel.totalRows - 1 - note.row
+
+                let baseX = CGFloat(note.startTick) * pixelsPerTick
+                let baseW = CGFloat(note.durationTicks) * pixelsPerTick
+
+                let effectiveOffset = isSelected ? noteDragOffset : 0
+                let effectiveResizeDelta = isSelected ? noteResizeDelta : 0
+
+                let noteW = max(4, baseW + effectiveResizeDelta - 2)
+                let noteH = cellHeight - 2
+                let bodyCenterX = baseX + effectiveOffset + 1 + noteW / 2
+                let noteY = CGFloat(displayRow) * cellHeight + 1 + noteH / 2
+
+                // Note body
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(note.timbre.color)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
+                                    lineWidth: isSelected ? 2 : 0.5)
+                    )
+                    .frame(width: noteW, height: noteH)
+                    .contentShape(Rectangle())
+                    .gesture(isSelected
+                             ? moveDragGesture(for: note, ppt: pixelsPerTick, tpb: tpb)
+                             : nil)
+                    .onTapGesture {
+                        if isSelected {
+                            selectedNoteID = nil
+                            noteDragOffset = 0
+                            noteResizeDelta = 0
+                        } else {
+                            selectedNoteID = note.id
+                            noteDragOffset = 0
+                            noteResizeDelta = 0
+                        }
+                    }
+                    .onLongPressGesture(minimumDuration: 0.4) {
+                        selectedNoteID = note.id
+                        noteDragOffset = 0
+                        noteResizeDelta = 0
+                    }
+                    .position(x: bodyCenterX, y: noteY)
+
+                // Resize handle
+                if isSelected {
+                    let handleWidth: CGFloat = 22
+                    let handleX = baseX + effectiveOffset + 1 + noteW + handleWidth / 2
+                    Image(systemName: "arrow.left.and.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: handleWidth, height: noteH)
+                        .background(Color.orange.opacity(0.7))
+                        .cornerRadius(3)
+                        .contentShape(Rectangle())
+                        .gesture(resizeDragGesture(for: note, ppt: pixelsPerTick, tpb: tpb))
+                        .position(x: handleX, y: noteY)
+                }
+            }
+        }
+    }
+
+    // MARK: - Drag gestures
+
+    /// Drag gesture to move the selected note horizontally, snapping to beat grid
+    private func moveDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
+            .onChanged { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
+                noteDragOffset = snappedTicks * ppt
+            }
+            .onEnded { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
+                let newStart = note.startTick + snappedTicks
+                let clamped = max(0, min(newStart, viewModel.totalTicks - note.durationTicks))
+                let aligned = Int(round(Double(clamped) / Double(tpb))) * tpb
+                viewModel.moveNote(noteID: note.id, toTick: aligned)
+                noteDragOffset = 0
+            }
+    }
+
+    /// Drag gesture to resize the selected note by dragging its right edge
+    private func resizeDragGesture(for note: RollNote, ppt: CGFloat, tpb: Int) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+            .onChanged { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = round(rawTicks / CGFloat(tpb)) * CGFloat(tpb)
+                let proposedDur = CGFloat(note.durationTicks) + snappedTicks
+                let minDur = CGFloat(tpb)
+                let maxDur = CGFloat(viewModel.totalTicks - note.startTick)
+                let clampedDur = max(minDur, min(proposedDur, maxDur))
+                noteResizeDelta = (clampedDur - CGFloat(note.durationTicks)) * ppt
+            }
+            .onEnded { value in
+                let rawTicks = value.translation.width / ppt
+                let snappedTicks = Int(round(rawTicks / CGFloat(tpb))) * tpb
+                let newDur = note.durationTicks + snappedTicks
+                let clamped = max(tpb, min(newDur, viewModel.totalTicks - note.startTick))
+                let aligned = max(tpb, Int(round(Double(clamped) / Double(tpb))) * tpb)
+                viewModel.resizeNote(noteID: note.id, toDuration: aligned)
+                noteResizeDelta = 0
+            }
+    }
+}

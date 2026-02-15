@@ -59,6 +59,10 @@ final class PianoRollViewModel {
     // Project management
     var projectName: String = "未命名工程"
     var hasUnsavedChanges: Bool = false
+    /// The URL of the current project file (nil if never saved)
+    var currentProjectURL: URL? = nil
+    /// Counter for generating default project names
+    private var nextProjectNumber: Int = 1
 
     // Undo / Redo
     private var undoStack: [EditorSnapshot] = []
@@ -70,11 +74,17 @@ final class PianoRollViewModel {
     // UI state flags
     var showClearConfirm = false
     var showSaveSheet = false
+    var showSaveAsSheet = false
     var showLoadSheet = false
+    var showDocumentPicker = false
     var showUnsavedAlert = false
     var showSaveSuccess = false
+    var showShareSheet = false
     var savedProjects: [ProjectFileInfo] = []
     var saveNameInput: String = ""
+    var shareURL: URL? = nil
+    /// Flag to automatically share after save
+    var shouldShareAfterSave = false
 
     // Note names (bottom to top: C2, C#2, D2 ... B6, C7)
     let noteNames: [String] = {
@@ -125,6 +135,7 @@ final class PianoRollViewModel {
     // MARK: - Init (auto-restore)
 
     init() {
+        loadNextProjectNumber()
         restoreAutoSave()
     }
 
@@ -490,6 +501,90 @@ final class PianoRollViewModel {
         projectsDirectory.appendingPathComponent("_autosave.json")
     }
 
+    // MARK: - New project
+
+    /// Create a new project with a default name
+    func newProject() {
+        if hasUnsavedChanges {
+            // Should show unsaved alert first
+            return
+        }
+        if isPlaying { stop() }
+        undoStack.removeAll()
+        redoStack.removeAll()
+        notes.removeAll()
+        measures = 8
+        bpm = 120
+        beatsPerMeasure = 4
+        projectName = "我的作品 \(nextProjectNumber)"
+        nextProjectNumber += 1
+        saveNextProjectNumber()
+        currentProjectURL = nil
+        hasUnsavedChanges = false
+        autoSave()
+    }
+
+    // MARK: - Save / Save As
+
+    /// Save to current URL if exists, otherwise show save as dialog
+    func save() {
+        if let url = currentProjectURL {
+            // Direct save to existing file
+            saveToURL(url, name: projectName)
+        } else {
+            // Show save as dialog
+            saveNameInput = projectName
+            showSaveSheet = true
+        }
+    }
+
+    /// Always show save as dialog to enter a new name
+    func saveAs() {
+        saveNameInput = projectName
+        showSaveAsSheet = true
+    }
+
+    /// Save with a new name (used by save as sheet)
+    func saveWithName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmed.isEmpty ? "未命名工程" : trimmed
+        let url = Self.projectsDirectory.appendingPathComponent(makeFileName(name: finalName))
+        saveToURL(url, name: finalName)
+        
+        // If this was triggered by share, show share sheet after save
+        if shouldShareAfterSave {
+            shouldShareAfterSave = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self else { return }
+                if let url = self.currentProjectURL {
+                    self.shareURL = url
+                    self.showShareSheet = true
+                }
+            }
+        }
+    }
+
+    /// Save project to a specific URL
+    private func saveToURL(_ url: URL, name: String) {
+        let project = PianoRollProject(
+            projectName: name, bpm: bpm,
+            measures: measures, beatsPerMeasure: beatsPerMeasure,
+            notes: notes
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(project) else { return }
+        do {
+            try data.write(to: url)
+            projectName = name
+            currentProjectURL = url
+            hasUnsavedChanges = false
+            showSaveSuccess = true
+        } catch {
+            print("Save failed: \(error)")
+        }
+    }
+
     private func makeFileName(name: String) -> String {
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd-HH-mm-ss"
@@ -499,25 +594,44 @@ final class PianoRollViewModel {
         return "\(dateStr)-\(safeName).json"
     }
 
+    // Legacy method for compatibility
     func saveProject(name: String) {
-        let project = PianoRollProject(
-            projectName: name, bpm: bpm,
-            measures: measures, beatsPerMeasure: beatsPerMeasure,
-            notes: notes
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(project) else { return }
-        let url = Self.projectsDirectory.appendingPathComponent(makeFileName(name: name))
-        try? data.write(to: url)
-        projectName = name
-        hasUnsavedChanges = false
-        showSaveSuccess = true
+        saveWithName(name)
     }
 
+    // MARK: - Share project
+
+    /// Prepare the current project for sharing
+    func shareCurrentProject() {
+        if let url = currentProjectURL {
+            // Already saved, share directly
+            shareURL = url
+            showShareSheet = true
+        } else {
+            // Not saved yet, prompt to save first
+            shouldShareAfterSave = true
+            saveNameInput = projectName
+            showSaveSheet = true
+        }
+    }
+
+    // MARK: - Load / Open
+
+    /// Load project from a URL (app documents or external file)
     func loadProject(from url: URL) {
+        // Start accessing security-scoped resource for external files
+        let needsAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if needsAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        
         guard let data = try? Data(contentsOf: url),
-              let project = try? JSONDecoder().decode(PianoRollProject.self, from: data) else { return }
+              let project = try? JSONDecoder().decode(PianoRollProject.self, from: data) else {
+            print("Failed to load project from: \(url.path)")
+            return
+        }
         if isPlaying { stop() }
         undoStack.removeAll()
         redoStack.removeAll()
@@ -526,7 +640,15 @@ final class PianoRollViewModel {
         bpm = project.bpm
         beatsPerMeasure = project.beatsPerMeasure
         projectName = project.projectName
-        hasUnsavedChanges = false
+        // Only set currentProjectURL if loading from app documents
+        if url.path.starts(with: Self.projectsDirectory.path) {
+            currentProjectURL = url
+            hasUnsavedChanges = false
+        } else {
+            // External file: treat as new project with this content
+            currentProjectURL = nil
+            hasUnsavedChanges = true
+        }
         autoSave()
     }
 
@@ -582,5 +704,26 @@ final class PianoRollViewModel {
         beatsPerMeasure = project.beatsPerMeasure
         projectName = project.projectName
         hasUnsavedChanges = true
+    }
+
+    // MARK: - Project number persistence
+
+    private static var projectNumberURL: URL {
+        projectsDirectory.appendingPathComponent("_nextNumber.txt")
+    }
+
+    private func loadNextProjectNumber() {
+        guard let data = try? Data(contentsOf: Self.projectNumberURL),
+              let str = String(data: data, encoding: .utf8),
+              let num = Int(str) else {
+            nextProjectNumber = 1
+            return
+        }
+        nextProjectNumber = num
+    }
+
+    private func saveNextProjectNumber() {
+        let data = "\(nextProjectNumber)".data(using: .utf8)
+        try? data?.write(to: Self.projectNumberURL)
     }
 }

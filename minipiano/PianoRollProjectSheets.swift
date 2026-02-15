@@ -6,17 +6,19 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Save project sheet
 
 /// A sheet for saving the current piano roll project with a user-defined name.
 struct SaveProjectSheet: View {
     var viewModel: PianoRollViewModel
+    var isSaveAs: Bool = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
-                Text("保存工程")
+                Text(isSaveAs ? "另存为" : "保存工程")
                     .font(.title2.bold())
                     .padding(.top)
 
@@ -55,13 +57,18 @@ struct SaveProjectSheet: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { viewModel.showSaveSheet = false }
+                    Button("取消") { 
+                        viewModel.shouldShareAfterSave = false
+                        viewModel.showSaveSheet = false
+                        viewModel.showSaveAsSheet = false
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         let name = viewModel.saveNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        viewModel.saveProject(name: name.isEmpty ? "未命名工程" : name)
+                        viewModel.saveWithName(name.isEmpty ? "未命名工程" : name)
                         viewModel.showSaveSheet = false
+                        viewModel.showSaveAsSheet = false
                     }
                 }
             }
@@ -78,7 +85,37 @@ struct LoadProjectSheet: View {
 
     var body: some View {
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                // "从文件打开" button
+                Button {
+                    viewModel.showLoadSheet = false
+                    viewModel.showDocumentPicker = true
+                } label: {
+                    HStack {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.title3)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("从文件打开")
+                                .font(.headline)
+                            Text("选择其他位置的工程文件")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.systemGray6))
+                    .cornerRadius(10)
+                }
+                .padding(.horizontal)
+                .padding(.top)
+                
+                Divider()
+                    .padding(.vertical, 8)
+                
+                // App documents list
                 if viewModel.savedProjects.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "doc.text.magnifyingglass")
@@ -115,7 +152,7 @@ struct LoadProjectSheet: View {
                     }
                 }
             }
-            .navigationTitle("加载工程")
+            .navigationTitle("打开工程")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -124,4 +161,50 @@ struct LoadProjectSheet: View {
             }
         }
     }
+}
+
+// MARK: - Document Picker
+
+struct DocumentPicker: UIViewControllerRepresentable {
+    var viewModel: PianoRollViewModel
+    
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.json])
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(viewModel: viewModel)
+    }
+    
+    class Coordinator: NSObject, UIDocumentPickerDelegate {
+        var viewModel: PianoRollViewModel
+        
+        init(viewModel: PianoRollViewModel) {
+            self.viewModel = viewModel
+        }
+        
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            // Load the project from the selected file
+            viewModel.loadProject(from: url)
+        }
+    }
+}
+
+// MARK: - Share Sheet
+
+struct ShareSheet: UIViewControllerRepresentable {
+    var items: [Any]
+    
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        return controller
+    }
+    
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

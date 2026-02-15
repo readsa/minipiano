@@ -142,10 +142,19 @@ struct PianoRollView: View {
             Text("此操作将删除当前所有音符，是否继续？")
         }
         .alert("未保存的更改", isPresented: Bindable(viewModel).showUnsavedAlert) {
-            Button("保存并加载") { viewModel.showSaveSheet = true }
-            Button("不保存，直接加载", role: .destructive) {
-                viewModel.refreshSavedProjects()
-                viewModel.showLoadSheet = true
+            Button("保存") { 
+                viewModel.saveNameInput = viewModel.projectName
+                viewModel.showSaveSheet = true 
+            }
+            Button("不保存", role: .destructive) {
+                if viewModel.showLoadSheet {
+                    // User wants to load, discard changes
+                    viewModel.hasUnsavedChanges = false
+                } else {
+                    // User wants to create new project
+                    viewModel.hasUnsavedChanges = false
+                    viewModel.newProject()
+                }
             }
             Button("取消", role: .cancel) {}
         } message: {
@@ -157,10 +166,21 @@ struct PianoRollView: View {
             Text("工程已保存为 \(viewModel.projectName)")
         }
         .sheet(isPresented: Bindable(viewModel).showSaveSheet) {
-            SaveProjectSheet(viewModel: viewModel)
+            SaveProjectSheet(viewModel: viewModel, isSaveAs: false)
+        }
+        .sheet(isPresented: Bindable(viewModel).showSaveAsSheet) {
+            SaveProjectSheet(viewModel: viewModel, isSaveAs: true)
         }
         .sheet(isPresented: Bindable(viewModel).showLoadSheet) {
             LoadProjectSheet(viewModel: viewModel)
+        }
+        .sheet(isPresented: Bindable(viewModel).showDocumentPicker) {
+            DocumentPicker(viewModel: viewModel)
+        }
+        .sheet(isPresented: Bindable(viewModel).showShareSheet) {
+            if let url = viewModel.shareURL {
+                ShareSheet(items: [url])
+            }
         }
     }
 
@@ -196,24 +216,49 @@ struct PianoRollView: View {
         Menu {
             Section {
                 Button {
-                    viewModel.saveNameInput = viewModel.projectName
-                    viewModel.showSaveSheet = true
+                    if viewModel.hasUnsavedChanges {
+                        viewModel.showUnsavedAlert = true
+                    } else {
+                        viewModel.newProject()
+                    }
                 } label: {
-                    Label("保存工程", systemImage: "square.and.arrow.down")
+                    Label("新建工程", systemImage: "doc.badge.plus")
                 }
-
+                
                 Button {
-                    if viewModel.hasUnsavedChanges && !viewModel.notes.isEmpty {
+                    if viewModel.hasUnsavedChanges {
                         viewModel.showUnsavedAlert = true
                     } else {
                         viewModel.refreshSavedProjects()
                         viewModel.showLoadSheet = true
                     }
                 } label: {
-                    Label("加载工程", systemImage: "folder")
+                    Label("打开工程", systemImage: "folder")
                 }
             }
 
+            Section {
+                Button {
+                    viewModel.save()
+                } label: {
+                    Label("保存", systemImage: "square.and.arrow.down")
+                }
+                .disabled(viewModel.notes.isEmpty)
+                
+                Button {
+                    viewModel.saveAs()
+                } label: {
+                    Label("另存为", systemImage: "square.and.arrow.down.on.square")
+                }
+                .disabled(viewModel.notes.isEmpty)
+                
+                Button {
+                    viewModel.shareCurrentProject()
+                } label: {
+                    Label("分享工程", systemImage: "square.and.arrow.up")
+                }
+            }
+            
             Section {
                 Button(role: .destructive) {
                     if !viewModel.notes.isEmpty { viewModel.showClearConfirm = true }

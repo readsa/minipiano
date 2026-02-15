@@ -17,6 +17,20 @@ private struct EditorSnapshot {
     let beatsPerMeasure: Int
 }
 
+// MARK: - Editing Mode
+
+enum EditingMode: String, CaseIterable {
+    case quickWrite = "快写"
+    case quickEdit  = "快修"
+
+    var icon: String {
+        switch self {
+        case .quickWrite: return "pencil.line"
+        case .quickEdit:  return "slider.horizontal.below.square.and.square.filled"
+        }
+    }
+}
+
 // MARK: - Piano Roll ViewModel
 
 @Observable
@@ -52,6 +66,12 @@ final class PianoRollViewModel {
 
     /// Whether loop playback is enabled.
     var isLooping: Bool = false
+
+    /// The row currently being previewed (highlighting effect).
+    var previewingRow: Int? = nil
+
+    // Editing mode
+    var editingMode: EditingMode = .quickWrite
 
     // Audio configuration
     var selectedTimbre: Timbre = .sine
@@ -122,6 +142,8 @@ final class PianoRollViewModel {
     // Audio engine
     private var engine = AudioSynthEngine()
     private var activeNoteIDs: Set<String> = []
+    /// Token to match async preview-stop callbacks with the correct preview session.
+    private var previewToken: Int = 0
 
     /// Dedicated high-priority queue for audio tick processing.
     /// Keeps note triggering independent of main-thread rendering load.
@@ -172,6 +194,17 @@ final class PianoRollViewModel {
         }
     }
 
+    /// Add a note at the given beat index (only adds, never removes).
+    func addNoteIfEmpty(row: Int, beatIndex: Int) {
+        let tick = beatIndex * ticksPerBeat
+        guard noteAt(row: row, tick: tick) == nil else { return }
+        recordSnapshot()
+        let dur = ticksPerBeat
+        notes.append(RollNote(row: row, startTick: tick, durationTicks: dur, timbre: selectedTimbre))
+        previewNote(row: row, timbre: selectedTimbre)
+        markDirty()
+    }
+
     /// Change the timbre of an existing note
     func changeNoteTimbre(noteID: UUID, to timbre: Timbre) {
         recordSnapshot()
@@ -209,13 +242,33 @@ final class PianoRollViewModel {
     }
 
     /// Play a short preview of a note when placed
-    private func previewNote(row: Int, timbre: Timbre) {
-        let previewID = "preview_\(UUID())"
+    func previewNote(row: Int, timbre: Timbre) {
+        // Stop any currently playing preview first to avoid orphaned audio
+        stopPreview()
+        previewToken += 1
+        let token = previewToken
+        startPreview(row: row, timbre: timbre)
+        let dur = max(0.08, 60.0 / bpm / 48.0 * Double(ticksPerBeat))
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in
+            guard let self, self.previewToken == token else { return }
+            self.stopPreview()
+        }
+    }
+
+    /// Start previewing a note (press down)
+    func startPreview(row: Int, timbre: Timbre) {
+        let previewID = "preview_row_\(row)"
         engine.currentTimbre = timbre
         engine.noteOn(id: previewID, frequency: frequencies[row])
-        let dur = 60.0 / bpm / 48.0 * Double(ticksPerBeat)
-        DispatchQueue.main.asyncAfter(deadline: .now() + dur) { [weak self] in
-            self?.engine.noteOff(id: previewID)
+        previewingRow = row
+    }
+
+    /// Stop previewing the current note (release)
+    func stopPreview() {
+        if let row = previewingRow {
+            let previewID = "preview_row_\(row)"
+            engine.noteOff(id: previewID)
+            previewingRow = nil
         }
     }
 

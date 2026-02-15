@@ -80,14 +80,29 @@ struct PianoRollGridView: View {
         VStack(spacing: 0) {
             ForEach((0..<viewModel.totalRows).reversed(), id: \.self) { row in
                 let isBlack = viewModel.isBlackKey(row: row)
+                let isPreviewing = (viewModel.previewingRow == row)
                 ZStack {
                     Rectangle()
-                        .fill(isBlack ? Color(white: 0.2) : Color(white: 0.85))
+                        .fill(isPreviewing ? Color(red: 0.4, green: 0.5, blue: 0.65) : 
+                              (isBlack ? Color(white: 0.2) : Color(white: 0.85)))
                     Text(viewModel.noteNames[row])
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundColor(isBlack ? .white : .black)
+                        .foregroundColor(isPreviewing ? .white : (isBlack ? .white : .black))
                 }
                 .frame(height: cellHeight)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in
+                            if viewModel.previewingRow != row {
+                                viewModel.stopPreview()
+                                viewModel.startPreview(row: row, timbre: viewModel.selectedTimbre)
+                            }
+                        }
+                        .onEnded { _ in
+                            viewModel.stopPreview()
+                        }
+                )
             }
         }
     }
@@ -104,15 +119,22 @@ struct PianoRollGridView: View {
             for row in 0..<rows {
                 let displayRow = rows - 1 - row
                 let isBlack = viewModel.isBlackKey(row: row)
+                let isPreviewing = (viewModel.previewingRow == row)
                 let rect = CGRect(
                     x: 0,
                     y: CGFloat(displayRow) * cellHeight,
                     width: size.width,
                     height: cellHeight
                 )
+                let baseColor: Color
+                if isPreviewing {
+                    baseColor = Color(red: 0.3, green: 0.4, blue: 0.55)
+                } else {
+                    baseColor = isBlack ? Color(white: 0.16) : Color(white: 0.20)
+                }
                 context.fill(
                     Path(rect),
-                    with: .color(isBlack ? Color(white: 0.16) : Color(white: 0.20))
+                    with: .color(baseColor)
                 )
             }
 
@@ -311,6 +333,8 @@ struct PianoRollGridView: View {
 // MARK: - Notes layer view
 
 /// Renders all note blocks on the grid and handles tap, drag, and resize gestures.
+/// Uses manual hit-testing on a single overlay to ensure notes are always tappable
+/// regardless of zoom level.
 struct PianoRollNotesLayerView: View {
     var viewModel: PianoRollViewModel
     @Binding var selectedNoteID: UUID?
@@ -328,26 +352,15 @@ struct PianoRollNotesLayerView: View {
         let gridHeight = CGFloat(viewModel.totalRows) * cellHeight
 
         ZStack(alignment: .topLeading) {
-            // Single tap target overlay – replaces the O(rows×beats) ForEach
+            // Unified tap target — handles both blank area and note taps
             Color.clear
                 .frame(width: gridWidth, height: gridHeight)
                 .contentShape(Rectangle())
                 .onTapGesture { location in
-                    if selectedNoteID != nil {
-                        selectedNoteID = nil
-                        noteDragOffset = 0
-                        noteResizeDelta = 0
-                    } else {
-                        let beat = Int(location.x / cellWidth)
-                        let displayRow = Int(location.y / cellHeight)
-                        let row = viewModel.totalRows - 1 - displayRow
-                        guard row >= 0, row < viewModel.totalRows,
-                              beat >= 0, beat < viewModel.totalBeats else { return }
-                        viewModel.toggleNote(row: row, beatIndex: beat)
-                    }
+                    handleTap(at: location)
                 }
 
-            // Rendered notes
+            // Visual note rendering (no gesture handlers here)
             ForEach(viewModel.notes) { note in
                 let isSelected = selectedNoteID == note.id
                 let displayRow = viewModel.totalRows - 1 - note.row
@@ -363,35 +376,8 @@ struct PianoRollNotesLayerView: View {
                 let bodyCenterX = baseX + effectiveOffset + 1 + noteW / 2
                 let noteY = CGFloat(displayRow) * cellHeight + 1 + noteH / 2
 
-                // Note body
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(note.timbre.color)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
-                                    lineWidth: isSelected ? 2 : 0.5)
-                    )
-                    .frame(width: noteW, height: noteH)
-                    .contentShape(Rectangle())
-                    .gesture(isSelected
-                             ? moveDragGesture(for: note, ppt: pixelsPerTick, tpb: tpb)
-                             : nil)
-                    .onTapGesture {
-                        if isSelected {
-                            selectedNoteID = nil
-                            noteDragOffset = 0
-                            noteResizeDelta = 0
-                        } else {
-                            selectedNoteID = note.id
-                            noteDragOffset = 0
-                            noteResizeDelta = 0
-                        }
-                    }
-                    .onLongPressGesture(minimumDuration: 0.4) {
-                        selectedNoteID = note.id
-                        noteDragOffset = 0
-                        noteResizeDelta = 0
-                    }
+                // Note body (visual only in quickWrite, draggable in quickEdit)
+                noteBodyView(note: note, isSelected: isSelected, noteW: noteW, noteH: noteH, tpb: tpb)
                     .position(x: bodyCenterX, y: noteY)
 
                 // Resize handle
@@ -409,6 +395,103 @@ struct PianoRollNotesLayerView: View {
                         .position(x: handleX, y: noteY)
                 }
             }
+        }
+    }
+
+    // MARK: - Unified tap handler with manual hit-testing
+
+    /// Expands a note's visual rect by `margin` on each side for easier tapping.
+    private func noteRect(for note: RollNote, margin: CGFloat = 8) -> CGRect {
+        let displayRow = viewModel.totalRows - 1 - note.row
+        let x = CGFloat(note.startTick) * pixelsPerTick + 1
+        let w = max(4, CGFloat(note.durationTicks) * pixelsPerTick - 2)
+        let y = CGFloat(displayRow) * cellHeight + 1
+        let h = cellHeight - 2
+        return CGRect(x: x - margin, y: y - margin, width: w + margin * 2, height: h + margin * 2)
+    }
+
+    /// Find the note whose visual rect contains `point`, preferring selected note.
+    private func hitNote(at point: CGPoint) -> RollNote? {
+        // Prioritize the selected note
+        if let selID = selectedNoteID,
+           let sel = viewModel.notes.first(where: { $0.id == selID }),
+           noteRect(for: sel).contains(point) {
+            return sel
+        }
+        // Then check all notes (reverse order so top-most visual wins)
+        return viewModel.notes.reversed().first { noteRect(for: $0).contains(point) }
+    }
+
+    private func handleTap(at location: CGPoint) {
+        if let tappedNote = hitNote(at: location) {
+            // Tapped on a note
+            let isSelected = selectedNoteID == tappedNote.id
+            switch viewModel.editingMode {
+            case .quickWrite:
+                if isSelected {
+                    selectedNoteID = nil
+                    noteDragOffset = 0
+                    noteResizeDelta = 0
+                } else {
+                    viewModel.removeNote(noteID: tappedNote.id)
+                }
+            case .quickEdit:
+                if isSelected {
+                    selectedNoteID = nil
+                    noteDragOffset = 0
+                    noteResizeDelta = 0
+                } else {
+                    selectedNoteID = tappedNote.id
+                    noteDragOffset = 0
+                    noteResizeDelta = 0
+                }
+            }
+        } else {
+            // Tapped on empty space
+            if selectedNoteID != nil {
+                selectedNoteID = nil
+                noteDragOffset = 0
+                noteResizeDelta = 0
+                return
+            }
+            let beat = Int(location.x / cellWidth)
+            let displayRow = Int(location.y / cellHeight)
+            let row = viewModel.totalRows - 1 - displayRow
+            guard row >= 0, row < viewModel.totalRows,
+                  beat >= 0, beat < viewModel.totalBeats else { return }
+            viewModel.addNoteIfEmpty(row: row, beatIndex: beat)
+        }
+    }
+
+    // MARK: - Note body (mode-dependent gestures)
+
+    @ViewBuilder
+    private func noteBodyView(note: RollNote, isSelected: Bool, noteW: CGFloat, noteH: CGFloat, tpb: Int) -> some View {
+        let visual = RoundedRectangle(cornerRadius: 4)
+            .fill(note.timbre.color)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isSelected ? Color.yellow : Color.white.opacity(0.4),
+                            lineWidth: isSelected ? 2 : 0.5)
+            )
+            .frame(width: noteW, height: noteH)
+
+        switch viewModel.editingMode {
+        case .quickWrite:
+            // Quick Write: long press to select (tap handled by unified handler)
+            visual
+                .contentShape(Rectangle())
+                .onLongPressGesture(minimumDuration: 0.35) {
+                    selectedNoteID = note.id
+                    noteDragOffset = 0
+                    noteResizeDelta = 0
+                }
+
+        case .quickEdit:
+            // Quick Edit: drag to move (tap handled by unified handler)
+            visual
+                .contentShape(Rectangle())
+                .gesture(moveDragGesture(for: note, ppt: pixelsPerTick, tpb: tpb))
         }
     }
 
@@ -466,13 +549,8 @@ private enum PinchZoomDirection {
     case uniform      // scale both axes
 }
 
-/// Attaches a directional 2-finger pinch gesture recognizer to the nearest ancestor
-/// UIScrollView, enabling independent horizontal/vertical zoom on the piano roll grid.
-///
-/// Direction is locked when the gesture starts based on the angle between the two fingers:
-///   - Nearly horizontal (< 30°) → zoom time axis only
-///   - Nearly vertical   (> 60°) → zoom pitch axis only
-///   - In between                → zoom both axes
+/// Simple directional pinch-to-zoom. Attaches to the nearest ancestor UIScrollView.
+/// Zoom center is effectively the screen center (scroll position stays unchanged).
 private struct DirectionalPinchZoom: UIViewRepresentable {
     @Binding var timeScale: CGFloat
     @Binding var pitchScale: CGFloat
@@ -496,11 +574,6 @@ private struct DirectionalPinchZoom: UIViewRepresentable {
         coordinator.detach()
     }
 
-    // MARK: Anchor view
-
-    /// An invisible view inserted into the hierarchy. On appearing it walks up
-    /// the UIKit view tree to find the nearest UIScrollView and attaches
-    /// a UIPinchGestureRecognizer to it.
     final class PinchAnchorView: UIView {
         weak var coordinator: Coordinator?
         private var didAttach = false
@@ -509,15 +582,12 @@ private struct DirectionalPinchZoom: UIViewRepresentable {
             super.didMoveToWindow()
             guard window != nil, !didAttach else { return }
             didAttach = true
-            // Delay one run-loop so the full UIKit hierarchy is available.
             DispatchQueue.main.async { [weak self] in
                 guard let self, let coordinator = self.coordinator else { return }
                 coordinator.attach(from: self)
             }
         }
     }
-
-    // MARK: Coordinator
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var timeScaleBinding: Binding<CGFloat>
@@ -533,10 +603,7 @@ private struct DirectionalPinchZoom: UIViewRepresentable {
             self.pitchScaleBinding = pitchScale
         }
 
-        // MARK: Attach / Detach
-
         func attach(from view: UIView) {
-            // Walk up and find the first (nearest) UIScrollView.
             var current: UIView? = view
             while let v = current {
                 if let sv = v as? UIScrollView {
@@ -556,14 +623,10 @@ private struct DirectionalPinchZoom: UIViewRepresentable {
             }
         }
 
-        // MARK: UIGestureRecognizerDelegate
-
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool { true }
-
-        // MARK: Pinch handling
 
         @objc func handlePinch(_ gr: UIPinchGestureRecognizer) {
             switch gr.state {
@@ -589,14 +652,11 @@ private struct DirectionalPinchZoom: UIViewRepresentable {
             }
         }
 
-        // MARK: Helpers
-
-        /// Determine the dominant pinch axis from the angle between the two fingers.
         private func detectDirection(_ gr: UIPinchGestureRecognizer) -> PinchZoomDirection {
             guard gr.numberOfTouches >= 2 else { return .uniform }
             let p1 = gr.location(ofTouch: 0, in: gr.view)
             let p2 = gr.location(ofTouch: 1, in: gr.view)
-            let angle = atan2(abs(p2.y - p1.y), abs(p2.x - p1.x))  // 0 = horizontal, π/2 = vertical
+            let angle = atan2(abs(p2.y - p1.y), abs(p2.x - p1.x))
             if angle < .pi / 6 { return .horizontal }
             if angle > .pi / 3 { return .vertical }
             return .uniform

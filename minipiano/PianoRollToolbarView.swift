@@ -17,6 +17,8 @@ struct PianoRollParameterStrip: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 20) {
+                editingModeToggle
+                separator
                 timbreMenu
                 separator
                 beatsPerMeasureMenu
@@ -31,6 +33,32 @@ struct PianoRollParameterStrip: View {
         .background(.ultraThinMaterial)
         .overlay(alignment: .bottom) {
             Divider().opacity(0.3)
+        }
+    }
+
+    // MARK: - Editing mode toggle
+
+    private var editingModeToggle: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                selectedNoteID = nil
+                viewModel.editingMode = (viewModel.editingMode == .quickWrite) ? .quickEdit : .quickWrite
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: viewModel.editingMode.icon)
+                    .font(.caption)
+                Text(viewModel.editingMode.rawValue)
+                    .font(.subheadline.weight(.medium))
+            }
+            .foregroundStyle(viewModel.editingMode == .quickWrite ? .cyan : .orange)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                (viewModel.editingMode == .quickWrite ? Color.cyan : Color.orange)
+                    .opacity(0.15),
+                in: .capsule
+            )
         }
     }
 

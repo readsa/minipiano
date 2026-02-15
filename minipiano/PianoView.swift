@@ -53,7 +53,7 @@ func keysForOctave(_ octave: Int) -> [PianoKey] {
 /// using a custom multi-touch gesture to support simultaneous presses.
 struct OctaveRowView: View {
     let keys: [PianoKey]
-    let engine: SineWaveEngine
+    let engine: AudioSynthEngine
 
     /// White key indices within the semitone array:
     /// C=0, D=2, E=4, F=5, G=7, A=9, B=11
@@ -98,7 +98,7 @@ struct OctaveRowView: View {
 
 struct WhiteKeyView: View {
     let key: PianoKey
-    let engine: SineWaveEngine
+    let engine: AudioSynthEngine
     @State private var isPressed = false
 
     var body: some View {
@@ -133,7 +133,7 @@ struct WhiteKeyView: View {
 
 struct BlackKeyView: View {
     let key: PianoKey
-    let engine: SineWaveEngine
+    let engine: AudioSynthEngine
     @State private var isPressed = false
 
     var body: some View {
@@ -159,7 +159,7 @@ struct BlackKeyView: View {
 
 struct PianoView: View {
     var onBack: () -> Void = {}
-    @State private var engine = SineWaveEngine()
+    @State private var engine = AudioSynthEngine()
 
     /// Octaves 1–8 (C1 ~ C8 covers a wide range).
     /// Rows are drawn bottom-to-top: octave 1 at bottom, octave 8 at top.

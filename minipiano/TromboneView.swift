@@ -11,7 +11,7 @@ import CoreMotion
 struct TromboneView: View {
     var onBack: () -> Void = {}
 
-    @State private var engine = SineWaveEngine()
+    @State private var engine = AudioSynthEngine()
     @State private var motionManager = CMMotionManager()
     @State private var isPlaying = false
     @State private var currentFrequency: Double = 200.0
@@ -115,7 +115,10 @@ struct TromboneView: View {
                 }
             }
         }
-        .onAppear  { startMotionUpdates() }
+        .onAppear {
+            engine.currentTimbre = .brass  // Set brass timbre for trombone
+            startMotionUpdates()
+        }
         .onDisappear {
             stopPlaying()
             stopMotionUpdates()

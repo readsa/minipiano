@@ -27,7 +27,8 @@ A lightweight iOS virtual instrument app built entirely with **SwiftUI** and **A
 
 ### Features
 
-- **Polyphonic sine-wave synthesizer** — real-time audio generation via `AVAudioSourceNode`, supporting multiple simultaneous notes
+- **Multi-timbre polyphonic synthesizer** — real-time audio generation via `AVAudioSourceNode`, supporting multiple simultaneous notes with 6 different waveforms (sine, square, triangle, sawtooth, pulse, noise)
+- **ADSR envelope** — smooth attack and release phases eliminate clicking and popping sounds for professional audio quality
 - **Multi-touch piano keys** — independent `DragGesture` per key, allowing chords
 - **Gyroscope-controlled trombone** — tilt forward/backward to sweep C2–C6; or use the on-screen touch bar for precise pitch control
 - **Piano roll editor** with:
@@ -58,7 +59,7 @@ minipiano/
 ├── PianoView.swift           # 8-octave virtual piano (multi-touch)
 ├── TromboneView.swift        # Gyroscope trombone simulator
 ├── PianoRollView.swift       # Piano roll note editor & playback
-├── SineWaveEngine.swift      # Polyphonic sine-wave audio engine
+├── AudioSynthEngine.swift    # Multi-timbre polyphonic audio synthesizer with ADSR envelope
 └── Assets.xcassets/          # App icons & accent color
 ```
 
@@ -76,7 +77,7 @@ minipiano/
 
 ### Architecture
 
-- **`SineWaveEngine`** — A thread-safe, polyphonic synthesizer built on `AVAudioEngine`. Each active note spawns its own `AVAudioSourceNode` generating a sine wave (piano) or a multi-harmonic brass waveform (trombone). It also supports `DynamicFrequency` for real-time pitch bending.
+- **`AudioSynthEngine`** — A thread-safe, polyphonic synthesizer built on `AVAudioEngine`. Supports 6 waveforms (sine, square, triangle, sawtooth, pulse, noise) with customizable ADSR envelope for smooth attack and release. Each active note spawns its own `AVAudioSourceNode`. Also supports `DynamicFrequency` for real-time pitch bending (trombone).
 - **`PianoRollViewModel`** — An `@Observable` view model managing the note grid, playback timer, undo/redo snapshots, and JSON-based project persistence.
 - **Navigation** — A simple `enum AppPage` state machine drives page transitions without `NavigationStack`, keeping the UI minimal.
 
@@ -102,7 +103,8 @@ This project is provided as-is for educational and personal use.
 
 ### 功能特性
 
-- **多音色正弦波合成器** — 通过 `AVAudioSourceNode` 实时生成音频，支持多音同时发声
+- **多音色复音合成器** — 通过 `AVAudioSourceNode` 实时生成音频，支持多音同时发声，提供 6 种波形（正弦波、方波、三角波、锯齿波、脉冲波、噪声）
+- **ADSR 包络** — 柔和的切入和释放阶段，消除爆破音和噼啪声，提供专业音质
 - **多点触控琴键** — 每个琴键独立手势，可弹奏和弦
 - **陀螺仪控制长号** — 前后倾斜手机在 C2–C6 之间滑动音高；也可使用屏幕触摸条精准控制
 - **钢琴卷帘编辑器**：
@@ -133,7 +135,7 @@ minipiano/
 ├── PianoView.swift           # 8 八度虚拟钢琴（多点触控）
 ├── TromboneView.swift        # 陀螺仪长号模拟器
 ├── PianoRollView.swift       # 钢琴卷帘音符编辑器 & 回放
-├── SineWaveEngine.swift      # 多音正弦波音频引擎
+├── AudioSynthEngine.swift    # 多音色复音音频合成器（带 ADSR 包络）
 └── Assets.xcassets/          # 应用图标 & 主题色
 ```
 
@@ -151,7 +153,7 @@ minipiano/
 
 ### 架构说明
 
-- **`SineWaveEngine`** — 基于 `AVAudioEngine` 的线程安全多音合成器。每个活跃音符生成独立的 `AVAudioSourceNode`，钢琴使用正弦波，长号使用多次谐波铜管波形。支持 `DynamicFrequency` 实时变调。
+- **`AudioSynthEngine`** — 基于 `AVAudioEngine` 的线程安全多音合成器。支持 6 种波形（正弦波、方波、三角波、锯齿波、脉冲波、噪声），配备可定制的 ADSR 包络以实现柔和的切入和释放。每个活跃音符生成独立的 `AVAudioSourceNode`。支持 `DynamicFrequency` 实时变调（长号）。
 - **`PianoRollViewModel`** — 使用 `@Observable` 的视图模型，管理音符网格、回放定时器、撤销/重做快照以及基于 JSON 的工程持久化。
 - **页面导航** — 通过简单的 `enum AppPage` 状态机驱动页面切换，无需 `NavigationStack`，保持 UI 精简。
 

@@ -105,7 +105,7 @@ final class PianoRollViewModel {
     private var autoSaveWorkItem: DispatchWorkItem?
 
     // Audio engine
-    private var engine = SineWaveEngine()
+    private var engine = AudioSynthEngine()
     private var activeNoteIDs: Set<String> = []
 
     /// Dedicated high-priority queue for audio tick processing.

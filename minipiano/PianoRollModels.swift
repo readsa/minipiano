@@ -119,6 +119,7 @@ extension Timbre {
         case .sawtooth: return Color(red: 0.90, green: 0.49, blue: 0.13)
         case .pulse:    return Color(red: 0.91, green: 0.12, blue: 0.55)
         case .noise:    return Color(red: 0.56, green: 0.56, blue: 0.58)
+        case .brass:    return Color(red: 0.85, green: 0.65, blue: 0.15)
         }
     }
 }

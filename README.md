@@ -99,7 +99,7 @@ This project is provided as-is for educational and personal use.
 |---|---|
 | 🎹 **钢琴** | 8 个八度（C1–C8）的虚拟钢琴，支持多点触控同时按下多个琴键 |
 | 🎺 **长号** | 通过倾斜手机（CoreMotion 陀螺仪）或滑动屏幕上的触摸条来控制音高，采用铜管乐器风格的谐波波形 |
-| 🎼 **音乐编辑器** | 基于网格的钢琴卷帘编辑器，覆盖 5 个八度（C2–C7）。可创作旋律、调节 BPM、回放，并以 JSON 格式保存/加载工程 |
+| 🎼 **音乐编辑器** | 基于网格的钢琴卷帘编辑器，覆盖 5 个八度（C2–C7）。可创作旋律、调节 BPM、回放，并以 JSON 格式保存/加载作品 |
 
 ### 功能特性
 
@@ -113,7 +113,7 @@ This project is provided as-is for educational and personal use.
   - 可调小节数
   - 带实时光标的回放功能
   - 撤销 / 重做（最多 50 步）
-  - 保存 / 加载工程（以 JSON 文件存储在应用 Documents 目录）
+  - 保存 / 加载作品（以 JSON 文件存储在应用 Documents 目录）
   - 编辑时自动保存
 - **纯 SwiftUI** — 无 Storyboard、无 UIKit、无第三方依赖
 
@@ -154,7 +154,7 @@ minipiano/
 ### 架构说明
 
 - **`AudioSynthEngine`** — 基于 `AVAudioEngine` 的线程安全多音合成器。支持 6 种波形（正弦波、方波、三角波、锯齿波、脉冲波、噪声），配备可定制的 ADSR 包络以实现柔和的切入和释放。每个活跃音符生成独立的 `AVAudioSourceNode`。支持 `DynamicFrequency` 实时变调（长号）。
-- **`PianoRollViewModel`** — 使用 `@Observable` 的视图模型，管理音符网格、回放定时器、撤销/重做快照以及基于 JSON 的工程持久化。
+- **`PianoRollViewModel`** — 使用 `@Observable` 的视图模型，管理音符网格、回放定时器、撤销/重做快照以及基于 JSON 的作品持久化。
 - **页面导航** — 通过简单的 `enum AppPage` 状态机驱动页面切换，无需 `NavigationStack`，保持 UI 精简。
 
 ### 许可

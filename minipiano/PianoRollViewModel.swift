@@ -57,7 +57,7 @@ final class PianoRollViewModel {
     var selectedTimbre: Timbre = .sine
 
     // Project management
-    var projectName: String = "未命名工程"
+    var projectName: String = "未命名作品"
     var hasUnsavedChanges: Bool = false
     /// The URL of the current project file (nil if never saved)
     var currentProjectURL: URL? = nil
@@ -80,11 +80,16 @@ final class PianoRollViewModel {
     var showUnsavedAlert = false
     var showSaveSuccess = false
     var showShareSheet = false
+    var showOverwriteConfirm = false
     var savedProjects: [ProjectFileInfo] = []
     var saveNameInput: String = ""
     var shareURL: URL? = nil
     /// Flag to automatically share after save
     var shouldShareAfterSave = false
+    /// Pending save info for overwrite confirmation
+    var pendingSaveName: String = ""
+    var pendingSaveURL: URL? = nil
+    var pendingIsSaveAs: Bool = false
 
     // Note names (bottom to top: C2, C#2, D2 ... B6, C7)
     let noteNames: [String] = {
@@ -547,9 +552,26 @@ final class PianoRollViewModel {
     /// Save with a new name (used by save as sheet)
     func saveWithName(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalName = trimmed.isEmpty ? "未命名工程" : trimmed
+        let finalName = trimmed.isEmpty ? "未命名作品" : trimmed
         let url = Self.projectsDirectory.appendingPathComponent(makeFileName(name: finalName))
-        saveToURL(url, name: finalName)
+        
+        // Check if file exists and it's not the current file
+        if FileManager.default.fileExists(atPath: url.path),
+           currentProjectURL?.path != url.path {
+            // File exists and it's different - ask user to overwrite or rename
+            pendingSaveName = finalName
+            pendingSaveURL = url
+            showOverwriteConfirm = true
+            return
+        }
+        
+        // No conflict, save directly
+        performSave(to: url, name: finalName)
+    }
+    
+    /// Perform the actual save after conflict resolution
+    func performSave(to url: URL, name: String) {
+        saveToURL(url, name: name)
         
         // If this was triggered by share, show share sheet after save
         if shouldShareAfterSave {
@@ -560,6 +582,36 @@ final class PianoRollViewModel {
                     self.shareURL = url
                     self.showShareSheet = true
                 }
+            }
+        }
+    }
+    
+    /// Confirm overwrite and save
+    func confirmOverwrite() {
+        guard let url = pendingSaveURL else { return }
+        performSave(to: url, name: pendingSaveName)
+        pendingSaveName = ""
+        pendingSaveURL = nil
+        pendingIsSaveAs = false
+    }
+    
+    /// Cancel overwrite and return to name input
+    func cancelOverwrite() {
+        showOverwriteConfirm = false
+        // Re-open the save sheet for user to enter a different name
+        saveNameInput = pendingSaveName
+        let isSaveAs = pendingIsSaveAs
+        pendingSaveName = ""
+        pendingSaveURL = nil
+        pendingIsSaveAs = false
+        
+        // Delay to allow alert to dismiss first
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            if isSaveAs {
+                self.showSaveAsSheet = true
+            } else {
+                self.showSaveSheet = true
             }
         }
     }
@@ -586,12 +638,9 @@ final class PianoRollViewModel {
     }
 
     private func makeFileName(name: String) -> String {
-        let df = DateFormatter()
-        df.dateFormat = "yyyy-MM-dd-HH-mm-ss"
-        let dateStr = df.string(from: Date())
         let safeName = name.replacingOccurrences(of: "/", with: "-")
                            .replacingOccurrences(of: ":", with: "-")
-        return "\(dateStr)-\(safeName).json"
+        return "\(safeName).json"
     }
 
     // Legacy method for compatibility
@@ -655,17 +704,16 @@ final class PianoRollViewModel {
     func refreshSavedProjects() {
         let fm = FileManager.default
         let dir = Self.projectsDirectory
-        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey]) else {
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey]) else {
             savedProjects = []; return
         }
         savedProjects = files
-            .filter { $0.lastPathComponent != "_autosave.json" && $0.pathExtension == "json" }
+            .filter { $0.lastPathComponent != "_autosave.json" && $0.lastPathComponent != "_nextNumber.txt" && $0.pathExtension == "json" }
             .compactMap { url -> ProjectFileInfo? in
                 let name = url.deletingPathExtension().lastPathComponent
                 let attrs = try? fm.attributesOfItem(atPath: url.path)
-                let date = (attrs?[.creationDate] as? Date) ?? Date.distantPast
-                let displayName = name.count > 20 ? String(name.dropFirst(20)) : name
-                return ProjectFileInfo(fileName: url.lastPathComponent, displayName: displayName, date: date, url: url)
+                let date = (attrs?[.modificationDate] as? Date) ?? Date.distantPast
+                return ProjectFileInfo(fileName: url.lastPathComponent, displayName: name, date: date, url: url)
             }
             .sorted { $0.date > $1.date }
     }

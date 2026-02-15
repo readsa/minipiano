@@ -158,12 +158,28 @@ struct PianoRollView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("当前工程有未保存的更改，是否先保存？")
+            Text("当前作品有未保存的更改，是否先保存？")
         }
         .alert("保存成功", isPresented: Bindable(viewModel).showSaveSuccess) {
             Button("好的") {}
         } message: {
-            Text("工程已保存为 \(viewModel.projectName)")
+            Text("作品已保存为 \(viewModel.projectName)")
+        }
+        .alert("文件已存在", isPresented: Bindable(viewModel).showOverwriteConfirm) {
+            Button("覆盖", role: .destructive) {
+                viewModel.confirmOverwrite()
+            }
+            Button("重新命名") {
+                viewModel.cancelOverwrite()
+            }
+            Button("取消", role: .cancel) {
+                viewModel.shouldShareAfterSave = false
+                viewModel.pendingSaveName = ""
+                viewModel.pendingSaveURL = nil
+                viewModel.pendingIsSaveAs = false
+            }
+        } message: {
+            Text("已存在名为\"\(viewModel.pendingSaveName)\"的作品，是否覆盖？")
         }
         .sheet(isPresented: Bindable(viewModel).showSaveSheet) {
             SaveProjectSheet(viewModel: viewModel, isSaveAs: false)
@@ -222,7 +238,7 @@ struct PianoRollView: View {
                         viewModel.newProject()
                     }
                 } label: {
-                    Label("新建工程", systemImage: "doc.badge.plus")
+                    Label("新建作品", systemImage: "doc.badge.plus")
                 }
                 
                 Button {
@@ -233,7 +249,7 @@ struct PianoRollView: View {
                         viewModel.showLoadSheet = true
                     }
                 } label: {
-                    Label("打开工程", systemImage: "folder")
+                    Label("打开作品", systemImage: "folder")
                 }
             }
 
@@ -243,19 +259,17 @@ struct PianoRollView: View {
                 } label: {
                     Label("保存", systemImage: "square.and.arrow.down")
                 }
-                .disabled(viewModel.notes.isEmpty)
                 
                 Button {
                     viewModel.saveAs()
                 } label: {
                     Label("另存为", systemImage: "square.and.arrow.down.on.square")
                 }
-                .disabled(viewModel.notes.isEmpty)
                 
                 Button {
                     viewModel.shareCurrentProject()
                 } label: {
-                    Label("分享工程", systemImage: "square.and.arrow.up")
+                    Label("分享作品", systemImage: "square.and.arrow.up")
                 }
             }
             

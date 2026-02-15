@@ -18,22 +18,22 @@ struct SaveProjectSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
-                Text(isSaveAs ? "另存为" : "保存工程")
+                Text(isSaveAs ? "另存为" : "保存作品")
                     .font(.title2.bold())
                     .padding(.top)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("工程名称")
+                    Text("作品名称")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                    TextField("输入工程名称", text: Bindable(viewModel).saveNameInput)
+                    TextField("输入作品名称", text: Bindable(viewModel).saveNameInput)
                         .textFieldStyle(.roundedBorder)
                         .autocorrectionDisabled()
                 }
                 .padding(.horizontal)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("工程信息")
+                    Text("作品信息")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                     HStack {
@@ -65,8 +65,9 @@ struct SaveProjectSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
+                        viewModel.pendingIsSaveAs = isSaveAs
                         let name = viewModel.saveNameInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                        viewModel.saveWithName(name.isEmpty ? "未命名工程" : name)
+                        viewModel.saveWithName(name.isEmpty ? "未命名作品" : name)
                         viewModel.showSaveSheet = false
                         viewModel.showSaveAsSheet = false
                     }
@@ -97,7 +98,7 @@ struct LoadProjectSheet: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("从文件打开")
                                 .font(.headline)
-                            Text("选择其他位置的工程文件")
+                            Text("选择其他位置的作品文件")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -121,7 +122,7 @@ struct LoadProjectSheet: View {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.largeTitle)
                             .foregroundColor(.secondary)
-                        Text("暂无已保存的工程")
+                        Text("暂无已保存的作品")
                             .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -152,7 +153,7 @@ struct LoadProjectSheet: View {
                     }
                 }
             }
-            .navigationTitle("打开工程")
+            .navigationTitle("打开作品")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

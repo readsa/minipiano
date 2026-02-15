@@ -101,6 +101,9 @@ final class PianoRollViewModel {
         return [1, 3, 6, 8, 10].contains(semitone)
     }
 
+    // Auto-save debounce
+    private var autoSaveWorkItem: DispatchWorkItem?
+
     // Audio engine
     private var engine = SineWaveEngine()
     private var activeNoteIDs: Set<String> = []
@@ -553,13 +556,19 @@ final class PianoRollViewModel {
     // MARK: - Auto-save
 
     func autoSave() {
+        autoSaveWorkItem?.cancel()
+        // Capture current state synchronously so data is consistent
         let project = PianoRollProject(
             projectName: projectName, bpm: bpm,
             measures: measures, beatsPerMeasure: beatsPerMeasure,
             notes: notes
         )
-        guard let data = try? JSONEncoder().encode(project) else { return }
-        try? data.write(to: Self.autoSaveURL)
+        let work = DispatchWorkItem {
+            guard let data = try? JSONEncoder().encode(project) else { return }
+            try? data.write(to: Self.autoSaveURL)
+        }
+        autoSaveWorkItem = work
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     private func restoreAutoSave() {

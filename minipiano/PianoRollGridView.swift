@@ -153,29 +153,34 @@ struct PianoRollGridView: View {
 
     /// Sticky header showing measure numbers, scrolls horizontally with grid.
     private func measureHeaderBar(width: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
+        Canvas { context, size in
             // Background
-            Rectangle()
-                .fill(Color(red: 0.14, green: 0.14, blue: 0.17))
+            context.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .color(Color(red: 0.14, green: 0.14, blue: 0.17))
+            )
 
             // Bottom border
-            VStack { Spacer(); Rectangle().fill(Color.white.opacity(0.15)).frame(height: 1) }
+            var borderPath = Path()
+            borderPath.move(to: CGPoint(x: 0, y: size.height - 1))
+            borderPath.addLine(to: CGPoint(x: size.width, y: size.height - 1))
+            context.stroke(borderPath, with: .color(.white.opacity(0.15)), lineWidth: 1)
 
             // Measure numbers & dividers
             let bpm = viewModel.beatsPerMeasure
             let measureWidth = CGFloat(bpm) * cellWidth
-            ForEach(0..<viewModel.measures, id: \.self) { measure in
+            for measure in 0..<viewModel.measures {
                 let x = CGFloat(measure) * measureWidth
                 // Divider line
-                Rectangle()
-                    .fill(Color.white.opacity(0.25))
-                    .frame(width: 1)
-                    .offset(x: x)
+                var dividerPath = Path()
+                dividerPath.move(to: CGPoint(x: x, y: 0))
+                dividerPath.addLine(to: CGPoint(x: x, y: size.height))
+                context.stroke(dividerPath, with: .color(.white.opacity(0.25)), lineWidth: 1)
                 // Measure number label
-                Text("\(measure + 1)")
+                let text = Text("\(measure + 1)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundColor(Color.white.opacity(0.7))
-                    .offset(x: x + 6, y: 5)
+                context.draw(text, at: CGPoint(x: x + 14, y: size.height / 2))
             }
         }
         .frame(width: width, height: measureHeaderHeight)
@@ -319,30 +324,28 @@ struct PianoRollNotesLayerView: View {
 
     var body: some View {
         let tpb = viewModel.ticksPerBeat
+        let gridWidth = CGFloat(viewModel.totalBeats) * cellWidth
+        let gridHeight = CGFloat(viewModel.totalRows) * cellHeight
 
         ZStack(alignment: .topLeading) {
-            // Tap targets per beat column
-            ForEach(0..<viewModel.totalRows, id: \.self) { row in
-                ForEach(0..<viewModel.totalBeats, id: \.self) { beat in
-                    let displayRow = viewModel.totalRows - 1 - row
-                    Color.clear
-                        .frame(width: cellWidth, height: cellHeight)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if selectedNoteID != nil {
-                                selectedNoteID = nil
-                                noteDragOffset = 0
-                                noteResizeDelta = 0
-                            } else {
-                                viewModel.toggleNote(row: row, beatIndex: beat)
-                            }
-                        }
-                        .offset(
-                            x: CGFloat(beat) * cellWidth,
-                            y: CGFloat(displayRow) * cellHeight
-                        )
+            // Single tap target overlay – replaces the O(rows×beats) ForEach
+            Color.clear
+                .frame(width: gridWidth, height: gridHeight)
+                .contentShape(Rectangle())
+                .onTapGesture { location in
+                    if selectedNoteID != nil {
+                        selectedNoteID = nil
+                        noteDragOffset = 0
+                        noteResizeDelta = 0
+                    } else {
+                        let beat = Int(location.x / cellWidth)
+                        let displayRow = Int(location.y / cellHeight)
+                        let row = viewModel.totalRows - 1 - displayRow
+                        guard row >= 0, row < viewModel.totalRows,
+                              beat >= 0, beat < viewModel.totalBeats else { return }
+                        viewModel.toggleNote(row: row, beatIndex: beat)
+                    }
                 }
-            }
 
             // Rendered notes
             ForEach(viewModel.notes) { note in
